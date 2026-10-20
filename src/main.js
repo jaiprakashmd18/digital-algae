@@ -44,11 +44,22 @@ async function boot() {
       h('strong', {}, 'Demo mode. '),
       config.secretKeyRejected
         ? 'A secret Supabase key was configured for the browser and was refused. Use the publishable (anon) key. '
-        : 'No backend is configured, so this world is stored only in your browser and is not shared with anyone. ',
+        : [h('span', { class: 'banner-long' }, 'No backend is configured, so this world is stored only in your browser and is not shared with anyone. '),
+          h('span', { class: 'banner-short' }, 'This world lives only in your browser. ')],
       link('/about#demo', {}, 'What this means'))
     : null;
   app.replaceChildren(skip, banner ?? '', nav.el, outlet, createFooter());
   document.body.classList.toggle('is-demo', config.demo);
+
+  // Expose the height of the banner + header so full-screen layouts fit exactly.
+  const measureChrome = () => {
+    const top = nav.el.offsetTop + nav.el.offsetHeight;
+    document.documentElement.style.setProperty('--chrome-top', `${top}px`);
+  };
+  measureChrome();
+  new ResizeObserver(measureChrome).observe(nav.el);
+  if (banner) new ResizeObserver(measureChrome).observe(banner);
+  window.addEventListener('resize', measureChrome);
 
   const router = createRouter({ outlet, onNavigate: (route) => nav.setActive(route) });
   setRouter(router);
