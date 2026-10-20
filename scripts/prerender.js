@@ -7,7 +7,7 @@
  * route-specific <head> tags, plus robots.txt. Dynamic pages (discoveries,
  * regions) get metadata at request time from the functions in /api.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const STATIC_ROUTES = [
@@ -45,20 +45,16 @@ export function applyMeta(html, { siteUrl, path, title, description, noindex = f
 
 export function prerenderPlugin({ siteUrl }) {
   let outDir = 'dist';
-  let shellSource = null;
   return {
     name: 'internet-organism-prerender',
     apply: 'build',
     configResolved(c) {
       outDir = c.build.outDir;
     },
-    generateBundle(_, bundle) {
-      const shell = bundle['index.html'];
-      if (!shell) return;
-      shellSource = String(shell.source);
-    },
     closeBundle() {
-      if (!shellSource) return;
+      const shellPath = join(outDir, 'index.html');
+      if (!existsSync(shellPath)) return;
+      const shellSource = readFileSync(shellPath, 'utf8');
       for (const r of STATIC_ROUTES) {
         const dir = join(outDir, r.path);
         mkdirSync(dir, { recursive: true });
