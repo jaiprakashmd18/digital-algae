@@ -128,8 +128,11 @@ At <https://vercel.com/new> import the repository. `vercel.json` sets the build.
 
 ### 13. Configure production environment variables
 
-In Vercel → Settings → Environment Variables add `VITE_SUPABASE_URL`,
-`VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_PUBLIC_SITE_URL` (your production URL),
+The project's public Supabase URL and publishable key are already committed in
+`.env.production` (they are safe to publish; RLS protects the data). In Vercel →
+Settings → Environment Variables you can override them, and should add
+`VITE_PUBLIC_SITE_URL` once you have a custom domain (until then the Vercel
+production domain is used automatically),
 `VITE_OPERATOR_NAME`, `VITE_CONTACT_EMAIL` and any optional ones from `.env.example`.
 
 ### 14. Deploy
