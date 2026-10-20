@@ -15,6 +15,7 @@ import { PATTERN_LABELS, formatNumber } from '../utils/formatting.js';
 import { navigate } from '../router.js';
 import { track } from '../services/analytics-service.js';
 import { notify } from '../components/notifications.js';
+import { localTraceHistory } from '../services/trace-service.js';
 
 export function render({ route }) {
   const root = h('div', { class: 'page' });
@@ -44,7 +45,7 @@ function guestView(user) {
   const wrap = h('div', { class: 'two-col' });
   const left = h('div', { class: 'section' });
   if (user) left.append(statusMessage('info', 'You are visiting as a guest. Your traces are tied to this browser’s guest session. Create an account to keep them if you clear your browser data or switch devices.'));
-  else left.append(h('p', { class: 'muted' }, 'You do not need an account to explore or leave traces. An account keeps your trace history across devices, lets you save discoveries and choose a pseudonym.'));
+  else left.append(h('p', { class: 'muted' }, 'You do not need an account to explore or leave traces — participation is completely anonymous. An account is optional: it keeps your trace history across devices, lets you save discoveries and choose a pseudonym.'));
   if (config.demo) left.append(statusMessage('info', messageFor({ code: 'demo_mode' })));
   left.append(authForms(user));
   wrap.append(left, h('div', { class: 'section' }, personalData(user)));
@@ -172,7 +173,17 @@ function accountView(user) {
 function personalData(user) {
   const box = h('div', { class: 'section' }, loading('Loading your activity…'));
   if (!user && !config.demo) {
-    box.replaceChildren(h('p', { class: 'muted' }, 'Leave a trace and it will appear here.'), link('/?trace=1', { class: 'btn btn-primary btn-sm' }, 'Leave your trace'));
+    // Anonymous traces are not linked to anyone; this browser remembers its own.
+    const local = localTraceHistory();
+    box.replaceChildren(
+      h('h2', {}, 'Traces from this browser'),
+      h('p', { class: 'muted fine' }, 'Anonymous traces are not linked to you on the server. This list is kept only in this browser.'),
+      local.length ? h('ol', { class: 'event-list' }, local.map((t) => h('li', {},
+        h('span', {}, h('span', { class: 'tick-dot', style: { background: t.color, display: 'inline-block', marginRight: '8px' }, 'aria-hidden': 'true' }),
+          `${PATTERN_LABELS[t.pattern] ?? 'Trace'} in ${t.region?.name ?? t.region?.slug ?? 'a region'}${t.gain != null ? ` · +${Number(t.gain).toFixed(2)}` : ''}`),
+        h('time', { datetime: t.at, class: 'muted' }, formatDateTime(t.at)))))
+        : h('p', { class: 'muted' }, 'No traces from this browser yet.'),
+      link('/?trace=1', { class: 'btn btn-primary btn-sm' }, 'Leave your trace'));
     return box;
   }
   Promise.all([api().getAccount(), api().listMyTraces({ limit: 30 }), api().listSaved()]).then(([acc, traces, saved]) => {

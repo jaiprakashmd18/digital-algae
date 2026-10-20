@@ -77,8 +77,9 @@ export function createTraceDialog() {
 
   function compose(error = null) {
     const regions = world().regions;
-    const isGuest = !isPermanentUser(authState().user);
-    const limits = isGuest ? LIMITS.guest : LIMITS.account;
+    const user = authState().user;
+    const isGuest = !isPermanentUser(user);
+    const limits = !isGuest ? LIMITS.account : user?.is_anonymous ? LIMITS.guest : LIMITS.anonymous;
 
     const regionSelect = h('select', { id: 'trace-region', name: 'region' },
       regions.map((r) => h('option', { value: r.slug, selected: r.slug === draft.regionSlug }, `${r.name} — ${regionStateLabel(r.state)}`)));
@@ -157,7 +158,7 @@ export function createTraceDialog() {
       error ? h('p', { class: 'form-error', role: 'alert' }, error) : null,
       h('div', { class: 'dialog-actions' }, surprise, submit),
       h('p', { class: 'fine muted' },
-        `No account needed. ${isGuest ? 'Guests' : 'Accounts'} can leave a trace every ${limits.cooldownSeconds} s, up to ${limits.perHour} per hour and ${limits.perDay} per UTC day. `,
+        `No account, no sign-in — completely anonymous. ${isGuest ? 'You can' : 'Accounts can'} leave a trace every ${limits.cooldownSeconds} s, up to ${limits.perHour} per hour and ${limits.perDay} per UTC day${isGuest ? ' (shared by everyone on your connection)' : ''}. `,
         'Repeated traces in the same region within an hour add less energy. Your trace is public under a pseudonym; see the privacy policy.'));
     form.addEventListener('submit', (e) => {
       e.preventDefault();

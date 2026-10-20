@@ -37,13 +37,9 @@ describe('initial world', () => {
 });
 
 describe('submit_trace', () => {
-  it('rejects callers without a session', async () => {
-    const r = await db.as(anon, async (c) => {
-      // anon has no EXECUTE grant at all.
-      await expect(c.query("select public.submit_trace('the-core','spark','#ffffff',0.5,'lasting', gen_random_uuid())")).rejects.toThrow(/permission denied/);
-      return true;
-    });
-    expect(r).toBe(true);
+  it('rejects signed-out callers that cannot be identified', async () => {
+    const r = await db.trace(anon);
+    expect(r).toMatchObject({ ok: false, code: 'no_identity' });
   });
 
   it('accepts a valid guest trace, persists it and updates aggregates', async () => {

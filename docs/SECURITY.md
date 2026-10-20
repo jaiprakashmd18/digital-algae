@@ -38,7 +38,8 @@ Reads:
 All other access goes through functions:
 
 * **Public API**: `get_world_snapshot`, `get_region_detail`, `get_daily_feature`, `get_supporter_wall`, `track_event` (allow-list), `log_client_error` (bounded, globally capped), pure formula helpers.
-* **Session required** (`authenticated`, includes guests): `submit_trace`, `submit_report`, `get_my_account`, `delete_my_account`.
+* **Anyone, identified server-side** (`anon` and `authenticated`): `submit_trace`, `submit_report`.
+* **Session required** (`authenticated`): `get_my_account`, `delete_my_account`.
 * **Moderator/admin** (re-checked inside each function via `public.user_roles`, audited in `admin_audit_logs`): `admin_*`.
 * **Service role only**: `run_world_maintenance`, `record_payment_event`.
 
@@ -46,14 +47,36 @@ Internal helpers (`emit_event`, `record_snapshot`, `birth_region_for_stage`, …
 have EXECUTE revoked from every API role. `tests/db/security.test.js` verifies
 each of these rules against a real Postgres.
 
-## Identity and guests
+## Identity: completely anonymous visitors
 
-Guests use **Supabase anonymous sign-in**: a server-issued, signed session
-with a random user id. The id is never chosen by the client, so it can be
-used for rate limiting and ownership. A guest can link an email later and
-keep their traces. Supabase rate-limits anonymous sign-ups per IP
-(`[auth.rate_limit] anonymous_users`, default 30/hour; configure in the
-dashboard) — this is the main brake on session farming.
+Participation needs **no sign-in of any kind** (migration
+`20261020000006_anonymous_participation.sql`). `public.current_actor()`
+decides who is calling:
+
+* With a verified JWT: the auth user id (`account`, or `session_guest` for any
+  legacy Supabase anonymous session).
+* Without a session: a **pseudonymous connection key** =
+  `md5(HMAC-SHA256(client_ip, secret_salt))` as a UUID. The client IP comes
+  from the request headers the API gateway passes to PostgREST
+  (`cf-connecting-ip`, then `x-real-ip`, then the leftmost `x-forwarded-for`).
+  The salt is generated in the database (`public.app_secrets`, unreadable by
+  any API role). The IP itself is never stored, and the key cannot be
+  recomputed from an IP without the salt. If no IP header is present, the
+  trace is refused (`no_identity`) — it never falls through to "unlimited".
+
+The key is never chosen by the client, so it is a sound basis for rate
+limits, idempotency and "distinct visitor" counts. Trade-offs:
+
+* Everyone behind one connection (office, school, mobile carrier NAT)
+  shares one key and one allowance, and counts as one distinct visitor.
+* Someone controlling many IP addresses can act as many visitors.
+* **Verify on your live project** that `cf-connecting-ip` (or `x-real-ip`)
+  reaches the database — this was tested against plain Postgres only. The
+  quickest check: leave two traces from two different networks and confirm
+  `unique_contributors` increases by two.
+
+Operators can turn anonymous traces off with the `anonymous_traces_enabled`
+flag in `/admin`; signed-in accounts keep working.
 
 Public pages show only a pseudonym (deterministic `alias_for(id)` or a
 chosen display name). Account ids, emails and IPs never appear in public
@@ -61,7 +84,7 @@ data or Realtime payloads.
 
 ## Abuse prevention (implemented)
 
-* Per-actor cooldown / hourly / daily limits (guests 20 s / 12 / 40; accounts
+* Per-actor cooldown / hourly / daily limits (anonymous, per connection 15 s / 20 / 60; accounts
   10 s / 30 / 120), diminishing energy returns, 600 traces/min global breaker.
 * Idempotency keys prevent duplicate and replayed submissions.
 * Strict server validation of every parameter; payloads have size checks.
@@ -74,13 +97,11 @@ data or Realtime payloads.
 * Rejections aggregated per actor/hour (no IPs) for the admin view, which
   shows only a shortened hash of the actor id.
 
-**Not implemented / limits:** no CAPTCHA, no IP-based limits in our own
-database (Supabase applies its own per-IP limits on auth), no device
-fingerprinting. A determined attacker with many IPs can create many guest
-sessions; the global breaker, diminishing returns and stage thresholds that
-require *distinct* contributors bound the impact, and operators can pause
-contributions. If needed, add Supabase's CAPTCHA (hCaptcha/Turnstile) for
-anonymous sign-ins in the dashboard.
+**Not implemented / limits:** no CAPTCHA and no device fingerprinting.
+Anonymous limits are per connection, so a determined attacker with many IP
+addresses can bypass them; the global breaker, diminishing returns, stage
+thresholds that require *distinct* contributors and the
+`anonymous_traces_enabled` kill switch bound the impact.
 
 ## Payments
 

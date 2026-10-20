@@ -6,6 +6,9 @@ import { formatDuration } from './formatting.js';
 
 const MESSAGES = {
   no_session: 'We could not start a visitor session. Reload the page and try again.',
+  no_identity: 'The organism could not recognise this connection. Reload the page and try again.',
+  account_required: 'This needs a free account. Leaving traces does not — only personal features like saving.',
+  anonymous_paused: 'Anonymous traces are paused by the operators for now. Signed-in accounts can still leave traces.',
   guest_disabled: 'Guest contributions are not enabled on this site yet. Create an account to leave a trace.',
   feature_disabled: 'This feature is temporarily paused by the operators.',
   invalid_parameters: 'Something about this trace was not valid. Adjust it and try again.',

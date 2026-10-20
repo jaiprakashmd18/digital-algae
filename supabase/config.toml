@@ -37,8 +37,8 @@ additional_redirect_urls = ["http://localhost:5173/profile", "http://localhost:5
 jwt_expiry = 3600
 enable_refresh_token_rotation = true
 enable_signup = true
-# Guests leave traces through Supabase anonymous sign-in.
-enable_anonymous_sign_ins = true
+# Not needed: visitors leave traces with no session at all (migration 6).
+enable_anonymous_sign_ins = false
 minimum_password_length = 10
 
 [auth.rate_limit]

@@ -14,7 +14,7 @@ only animates and displays the state it is given.
  │ organism/ Three.js | 2D     │            │  public tables under RLS           │
  │                             │  Realtime  │ Realtime: INSERTs on world_events, │
  │                     ◀───────┼────────────│   community_events; presence       │
- │ lib/backend-supabase.js     │            │ Auth: anonymous guests + email     │
+ │ lib/backend-supabase.js     │            │ Auth: optional email accounts      │
  │ lib/backend-demo.js (local) │            │ Edge Functions: stripe-webhook,    │
  └─────────────────────────────┘            │   create-checkout, world-tick      │
  Vercel: static dist/ + /api/page-meta,     │ pg_cron (optional) → maintenance   │
@@ -83,15 +83,16 @@ historical version exactly. No animation frames are ever stored.
 
 ## The write path: `submit_trace()`
 
-One `SECURITY DEFINER` function, granted only to `authenticated` (which
-includes Supabase anonymous guests):
+One `SECURITY DEFINER` function, callable by anyone (`anon` and `authenticated`):
 
-1. Identity from the verified JWT (`auth.uid()`, `is_anonymous` claim).
+1. Identity via `current_actor()`: the verified JWT's user id, or — with no
+   session — a keyed hash of the client IP (see SECURITY.md). Unidentifiable
+   callers are refused.
 2. Feature flag `traces_enabled`.
 3. Parameter validation (pattern enum, `#rrggbb`, intensity 0.10–1.00, persistence enum, nonce, region exists and is public).
 4. `pg_advisory_xact_lock(actor)` — serialises one actor's submissions.
 5. Idempotency: `(actor_id, client_nonce)` is unique; a repeat returns the original result with `duplicate: true`.
-6. Rate limits (cooldown / hour / UTC day; guest vs account) and a global 600/min circuit breaker. Rejections are counted in `rate_limit_events`.
+6. Rate limits (cooldown / hour / UTC day; anonymous-per-connection vs account) and a global 600/min circuit breaker. Rejections are counted in `rate_limit_events`.
 7. Region row lock → compute decay, gain, state, level → update region.
 8. World row lock → totals, unique contributors, stage; on structural change bump version + snapshot (+ grow a region).
 9. Emit the public `trace` event (lightweight payload, no account id) and insert the private trace row.
