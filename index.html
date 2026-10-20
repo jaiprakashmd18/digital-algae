@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#04060c" />
+    <title>Internet Organism — One internet. One living organism.</title>
+    <meta name="description" content="One internet. One living organism. A persistent digital life form shared by everyone who visits — every trace you leave changes the world." />
+    <link rel="canonical" href="%VITE_PUBLIC_SITE_URL%/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Internet Organism" />
+    <meta property="og:title" content="Internet Organism — One internet. One living organism." />
+    <meta property="og:description" content="A persistent digital life form shared by everyone who visits. Leave a trace and watch it ripple through the world." />
+    <meta property="og:url" content="%VITE_PUBLIC_SITE_URL%/" />
+    <meta property="og:image" content="%VITE_PUBLIC_SITE_URL%/images/og-default.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="robots" content="index, follow" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Internet Organism",
+        "description": "A persistent, community-powered digital organism shared by everyone who visits.",
+        "url": "%VITE_PUBLIC_SITE_URL%/"
+      }
+    </script>
+    <style>
+      /* Minimal pre-boot styles so the first paint is already on-brand. */
+      html, body { background: #04060c; color: #eef4ff; font-family: system-ui, sans-serif; margin: 0; }
+      .boot { max-width: 640px; margin: 18vh auto 0; padding: 0 24px; line-height: 1.6; }
+      .boot h1 { font-size: 2.2rem; letter-spacing: -0.03em; line-height: 1.1; margin: 0 0 16px; }
+      .boot p { color: #b9c6dc; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Replaced when the app starts. Also what crawlers and no-JS visitors see. -->
+      <main class="boot">
+        <h1>Internet Organism</h1>
+        <p><strong>One internet. One living organism.</strong> A single digital life form shared by everyone who visits. It grows, glows and calms down according to what real people do here.</p>
+        <p>Visitors leave small traces of colour and energy. Each trace is recorded, ripples through the organism, and stays in the world after its author leaves. Milestones become public discoveries.</p>
+        <noscript><p>The interactive organism needs JavaScript. You can still read <a href="/about" style="color:#5ee7ff">how it works</a>.</p></noscript>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

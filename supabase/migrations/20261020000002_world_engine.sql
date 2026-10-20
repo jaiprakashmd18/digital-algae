@@ -1,0 +1,1086 @@
+-- Internet Organism — world engine.
+--
+-- Pure formula helpers, the trusted submit_trace() operation, the public
+-- world snapshot, community events and maintenance. All formulas are
+-- mirrored in src/lib/world-model.js (tests/db/formulas.test.js checks that
+-- both implementations agree).
+--
+-- SECURITY DEFINER functions use an empty search_path and fully qualified
+-- names so they cannot be hijacked by objects in other schemas.
+
+-- ---------------------------------------------------------------------------
+-- Formula helpers (immutable, no table access).
+-- ---------------------------------------------------------------------------
+
+-- Exponential decay: energy halves every half_life_hours.
+create or replace function public.world_decay(
+  p_energy numeric, p_since timestamptz, p_half_life_hours numeric, p_at timestamptz
+) returns numeric
+language sql immutable parallel safe set search_path = '' as $$
+  select round(
+    greatest(0, least(100,
+      p_energy * power(0.5::numeric,
+        greatest(0, extract(epoch from (p_at - p_since)))::numeric / (p_half_life_hours * 3600)
+      )
+    )), 2)
+$$;
+
+create or replace function public.region_state_for(p_energy numeric) returns text
+language sql immutable parallel safe set search_path = '' as $$
+  select case
+    when p_energy >= 75 then 'resonant'
+    when p_energy >= 45 then 'surging'
+    when p_energy >= 20 then 'active'
+    when p_energy >= 5 then 'stirring'
+    else 'dormant'
+  end
+$$;
+
+-- Region levels unlock new branches. Thresholds are all-time trace counts.
+create or replace function public.region_level_for(p_trace_count bigint) returns smallint
+language sql immutable parallel safe set search_path = '' as $$
+  select (case
+    when p_trace_count >= 1200 then 5
+    when p_trace_count >= 400 then 4
+    when p_trace_count >= 120 then 3
+    when p_trace_count >= 40 then 2
+    when p_trace_count >= 10 then 1
+    else 0
+  end)::smallint
+$$;
+
+-- Evolution stages need both traces and distinct contributors, so one
+-- visitor alone cannot push the world forward.
+create or replace function public.stage_for(p_traces bigint, p_contributors integer) returns smallint
+language sql immutable parallel safe set search_path = '' as $$
+  select (case
+    when p_traces >= 2500 and p_contributors >= 200 then 5
+    when p_traces >= 600 and p_contributors >= 60 then 4
+    when p_traces >= 120 and p_contributors >= 15 then 3
+    when p_traces >= 20 and p_contributors >= 5 then 2
+    when p_traces >= 1 and p_contributors >= 1 then 1
+    else 0
+  end)::smallint
+$$;
+
+create or replace function public.stage_name(p_stage smallint) returns text
+language sql immutable parallel safe set search_path = '' as $$
+  select (array['Dormant Seed', 'First Light', 'Mycelium', 'Bloom', 'Canopy', 'Sentience'])[p_stage + 1]
+$$;
+
+-- Base gain 2..6 by intensity, scaled by archetype, with diminishing returns
+-- for repeated traces by the same visitor in the same region within an hour.
+create or replace function public.trace_gain(
+  p_intensity numeric, p_gain_multiplier numeric, p_recent_same_actor integer,
+  p_resonance_bonus numeric, p_resonance_match boolean
+) returns numeric
+language sql immutable parallel safe set search_path = '' as $$
+  select round(
+    (2 + 4 * p_intensity) * p_gain_multiplier
+      * power(0.6::numeric, greatest(0, least(p_recent_same_actor, 20)))
+      * (case when p_resonance_match then 1 + p_resonance_bonus else 1 end),
+    2)
+$$;
+
+-- Deterministic default pseudonym for an account: never reveals the id.
+create or replace function public.alias_for(p_id uuid) returns text
+language sql immutable parallel safe set search_path = '' as $$
+  select (array['Drifter', 'Wanderer', 'Spore', 'Signal', 'Lumen', 'Echo', 'Tendril', 'Ember'])[
+           (('x' || substr(md5('alias:' || p_id::text), 1, 2))::bit(8)::int % 8) + 1]
+         || '-' || upper(substr(md5('alias:' || p_id::text), 3, 4))
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Internal helpers (not executable by API roles; see grants at the end).
+-- ---------------------------------------------------------------------------
+
+create or replace function public.flag_enabled(p_key text) returns boolean
+language sql stable set search_path = '' as $$
+  select coalesce((select enabled from public.feature_flags where key = p_key), false)
+$$;
+
+create or replace function public.utc_day_start(p_at timestamptz) returns timestamptz
+language sql immutable parallel safe set search_path = '' as $$
+  select date_trunc('day', p_at at time zone 'UTC') at time zone 'UTC'
+$$;
+
+create or replace function public.current_world_energy(p_at timestamptz) returns numeric
+language sql stable set search_path = '' as $$
+  select coalesce(round(avg(public.world_decay(r.energy, r.energy_at, a.half_life_hours, p_at)), 2), 0)
+  from public.regions r
+  join public.region_archetypes a using (region_type)
+  where r.visibility = 'public'
+$$;
+
+create or replace function public.world_structure() returns jsonb
+language sql stable set search_path = '' as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'slug', r.slug, 'name', r.name, 'type', r.region_type, 'seed', r.generation_seed,
+    'hue', r.hue, 'level', r.level, 'anchor', jsonb_build_array(r.anchor_x, r.anchor_y, r.anchor_z),
+    'parent', p.slug
+  ) order by r.created_at, r.slug), '[]'::jsonb)
+  from public.regions r
+  left join public.regions p on p.id = r.parent_region_id
+  where r.visibility = 'public'
+$$;
+
+create or replace function public.emit_event(
+  p_type text, p_origin text, p_region_id uuid, p_payload jsonb, p_state_version integer
+) returns bigint
+language plpgsql set search_path = '' as $$
+declare
+  v_id bigint;
+begin
+  insert into public.world_events (event_type, origin, region_id, payload, state_version)
+  values (p_type, p_origin, p_region_id, coalesce(p_payload, '{}'::jsonb), p_state_version)
+  returning id into v_id;
+  return v_id;
+end
+$$;
+
+create or replace function public.create_discovery(
+  p_slug text, p_kind text, p_origin text, p_region_id uuid, p_event_id bigint,
+  p_title text, p_description text, p_alias text, p_trace_id uuid, p_state_version integer
+) returns text
+language plpgsql set search_path = '' as $$
+declare
+  v_slug text := p_slug;
+  v_attempt integer := 0;
+begin
+  loop
+    begin
+      insert into public.discoveries (slug, kind, origin, region_id, world_event_id, title, description,
+                                      triggered_by_alias, trigger_trace_id, state_version)
+      values (v_slug, p_kind, p_origin, p_region_id, p_event_id, p_title, p_description,
+              p_alias, p_trace_id, p_state_version);
+      return v_slug;
+    exception when unique_violation then
+      v_attempt := v_attempt + 1;
+      if v_attempt > 5 then
+        raise;
+      end if;
+      v_slug := left(p_slug, 70) || '-' || substr(md5(random()::text), 1, 6);
+    end;
+  end loop;
+end
+$$;
+
+-- Bumps the state version and stores the regenerable structure. Caller must
+-- hold the world_state row lock.
+create or replace function public.record_snapshot(p_reason text) returns integer
+language plpgsql set search_path = '' as $$
+declare
+  v_version integer;
+begin
+  update public.world_state set state_version = state_version + 1, updated_at = now()
+  where id = 1
+  returning state_version into v_version;
+
+  insert into public.world_snapshots (state_version, evolution_stage, world_seed, structure, reason)
+  select v_version, w.evolution_stage, w.world_seed, public.world_structure(), left(p_reason, 200)
+  from public.world_state w where w.id = 1;
+
+  return v_version;
+end
+$$;
+
+create or replace function public.log_rate_limit(p_actor uuid, p_action text, p_reason text) returns void
+language sql set search_path = '' as $$
+  insert into public.rate_limit_events (actor_id, action, reason, window_start)
+  values (coalesce(p_actor, '00000000-0000-0000-0000-000000000000'), p_action, p_reason,
+          date_trunc('hour', now()))
+  on conflict (action, reason, window_start, actor_id)
+  do update set rejected_count = public.rate_limit_events.rejected_count + 1
+$$;
+
+-- Creates new frontier regions when the organism reaches stages 2..5.
+-- Deterministic: the same stage always produces the same region.
+create or replace function public.birth_region_for_stage(p_stage smallint) returns uuid
+language plpgsql set search_path = '' as $$
+declare
+  v_names text[] := array['The Mycelial Reach', 'The Bloom Expanse', 'The Canopy Drift', 'The Sentient Shoal'];
+  v_types text[] := array['frontier', 'resonance', 'pulse', 'memory'];
+  v_hues smallint[] := array[154, 274, 200, 120];
+  v_descs text[] := array[
+    'Thin threads that appeared when the organism first branched beyond its seed. They reach outward, testing the dark.',
+    'A field that opened when enough distinct visitors had touched the world. Repeated patterns echo here longer than anywhere else.',
+    'A fast, shifting layer that grew over the older regions once the organism matured. Energy moves through it quickly.',
+    'The newest and deepest structure: a dense shoal of nodes that keeps its shape long after activity fades.'
+  ];
+  v_idx integer := p_stage - 1;
+  v_seed bigint := ('x' || substr(md5('born:' || p_stage), 1, 12))::bit(48)::bigint;
+  v_angle double precision;
+  v_id uuid;
+  v_core uuid;
+begin
+  if p_stage < 2 or p_stage > 5 then
+    return null;
+  end if;
+  v_angle := radians((v_seed % 360)::double precision);
+  select id into v_core from public.regions where slug = 'the-core';
+  insert into public.regions (slug, name, region_type, description, generation_seed, hue,
+                              anchor_x, anchor_y, anchor_z, parent_region_id, origin, unlocked_at_stage)
+  values (
+    lower(replace(replace(v_names[v_idx], 'The ', ''), ' ', '-')),
+    v_names[v_idx], v_types[v_idx], v_descs[v_idx], v_seed, v_hues[v_idx],
+    round(((8.5 + p_stage) * cos(v_angle))::numeric, 2),
+    round((((v_seed / 360) % 9) - 4)::numeric, 2),
+    round(((8.5 + p_stage) * sin(v_angle))::numeric, 2),
+    v_core, 'system', p_stage
+  )
+  on conflict (slug) do nothing
+  returning id into v_id;
+  return v_id;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Community events: one "Convergence" per UTC day.
+-- Creation is lazy (first snapshot read or trace of the day) and also runs in
+-- run_world_maintenance(), so it works with or without a scheduler.
+-- ---------------------------------------------------------------------------
+create or replace function public.ensure_daily_community_event(p_at timestamptz) returns uuid
+language plpgsql set search_path = '' as $$
+declare
+  v_day date := (p_at at time zone 'UTC')::date;
+  v_slug text := 'convergence-' || to_char((p_at at time zone 'UTC')::date, 'YYYY-MM-DD');
+  v_id uuid;
+  v_region record;
+  v_avg numeric;
+  v_target integer;
+  v_version integer;
+  v_expired record;
+begin
+  if not public.flag_enabled('community_events_enabled') then
+    return null;
+  end if;
+
+  select state_version into v_version from public.world_state where id = 1;
+
+  for v_expired in
+    update public.community_events ce set status = 'expired'
+    where ce.status = 'active' and ce.ends_at <= p_at
+    returning ce.id, ce.slug, ce.title, ce.region_id, ce.goal_target
+  loop
+    perform public.emit_event('community_event_expired', 'system', v_expired.region_id,
+      jsonb_build_object('community_event', v_expired.slug, 'title', v_expired.title,
+                         'goal_target', v_expired.goal_target,
+                         'progress', (select count(distinct t.actor_id) from public.traces t
+                                      join public.community_events c on c.id = v_expired.id
+                                      where t.region_id = c.region_id
+                                        and t.created_at >= c.starts_at and t.created_at < c.ends_at)),
+      v_version);
+  end loop;
+
+  select id into v_id from public.community_events where slug = v_slug;
+  if found then
+    return v_id;
+  end if;
+
+  -- Transparent selection rule: the public region with the smallest
+  -- md5(event slug || region slug).
+  select r.id, r.name, r.slug into v_region
+  from public.regions r where r.visibility = 'public'
+  order by md5(v_slug || r.slug) limit 1;
+  if not found then
+    return null;
+  end if;
+
+  -- Target: 60% of the average daily distinct contributors over the past
+  -- seven days, between 3 and 25.
+  select count(distinct t.actor_id)::numeric / 7 into v_avg
+  from public.traces t
+  where t.created_at >= public.utc_day_start(p_at) - interval '7 days'
+    and t.created_at < public.utc_day_start(p_at);
+  v_target := greatest(3, least(25, ceil(coalesce(v_avg, 0) * 0.6)))::integer;
+
+  insert into public.community_events (slug, title, description, region_id, goal_target, starts_at, ends_at)
+  values (
+    v_slug,
+    'Convergence in ' || v_region.name,
+    format('If %s different visitors leave a trace in %s before the end of the UTC day, the region converges and the moment is recorded in the organism''s memory.',
+           v_target, v_region.name),
+    v_region.id, v_target,
+    public.utc_day_start(p_at), public.utc_day_start(p_at) + interval '1 day'
+  )
+  on conflict (slug) do nothing
+  returning id into v_id;
+
+  if v_id is not null then
+    perform public.emit_event('community_event_started', 'system', v_region.id,
+      jsonb_build_object('community_event', v_slug, 'title', 'Convergence in ' || v_region.name,
+                         'goal_target', v_target, 'region_slug', v_region.slug, 'day', v_day),
+      v_version);
+  else
+    select id into v_id from public.community_events where slug = v_slug;
+  end if;
+  return v_id;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- submit_trace: the only way to change the shared world.
+--
+-- Identity comes from the verified JWT (auth.uid()); anonymous visitors use
+-- Supabase anonymous sign-in, so every trace is tied to a server-issued
+-- session, never to a client-chosen id. Returns a JSON result and never
+-- raises for expected rejections.
+--
+-- Lock order (same everywhere, so concurrent traces cannot deadlock):
+--   1. per-actor advisory lock   2. region row   3. world_state row
+-- ---------------------------------------------------------------------------
+create or replace function public.submit_trace(
+  p_region_slug text,
+  p_trace_type text,
+  p_color text,
+  p_intensity numeric,
+  p_persistence text,
+  p_client_nonce uuid
+) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_actor uuid := auth.uid();
+  v_is_anon boolean := coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false);
+  v_now timestamptz := now();
+  v_cooldown integer;
+  v_hour_limit integer;
+  v_day_limit integer;
+  v_color text := lower(trim(coalesce(p_color, '')));
+  v_intensity numeric := round(p_intensity, 2);
+  v_existing record;
+  v_last timestamptz;
+  v_hour_count integer;
+  v_hour_oldest timestamptz;
+  v_day_count integer;
+  v_global_minute integer;
+  v_region record;
+  v_arch record;
+  v_world record;
+  v_decayed numeric;
+  v_recent_same integer;
+  v_match boolean;
+  v_gain numeric;
+  v_energy numeric;
+  v_old_state text;
+  v_new_state text;
+  v_new_level smallint;
+  v_actor_new_region boolean;
+  v_actor_new_global boolean;
+  v_alias text;
+  v_total bigint;
+  v_contrib integer;
+  v_stage smallint;
+  v_version integer;
+  v_structural boolean := false;
+  v_born uuid;
+  v_born_region record;
+  v_event_id bigint;
+  v_trace_id uuid := gen_random_uuid();
+  v_milestones jsonb := '[]'::jsonb;
+  v_mid bigint;
+  v_slug text;
+  v_ce record;
+  v_progress integer;
+  v_global numeric;
+  v_level_mark smallint;
+begin
+  if v_actor is null then
+    perform public.log_rate_limit(null, 'trace', 'no_session');
+    return jsonb_build_object('ok', false, 'code', 'no_session',
+      'message', 'A visitor session is required to leave a trace.');
+  end if;
+
+  if not public.flag_enabled('traces_enabled') then
+    return jsonb_build_object('ok', false, 'code', 'feature_disabled',
+      'message', 'Leaving traces is temporarily paused by the operators.');
+  end if;
+
+  -- Validation (the client validates too, but only this counts).
+  if p_trace_type is null or p_trace_type not in ('spark', 'spiral', 'ripple', 'bloom', 'filament') then
+    return jsonb_build_object('ok', false, 'code', 'invalid_parameters', 'field', 'trace_type');
+  end if;
+  if v_color !~ '^#[0-9a-f]{6}$' then
+    return jsonb_build_object('ok', false, 'code', 'invalid_parameters', 'field', 'color');
+  end if;
+  if v_intensity is null or v_intensity < 0.10 or v_intensity > 1.00 then
+    return jsonb_build_object('ok', false, 'code', 'invalid_parameters', 'field', 'intensity');
+  end if;
+  if p_persistence is null or p_persistence not in ('fleeting', 'lasting') then
+    return jsonb_build_object('ok', false, 'code', 'invalid_parameters', 'field', 'persistence');
+  end if;
+  if p_client_nonce is null then
+    return jsonb_build_object('ok', false, 'code', 'invalid_parameters', 'field', 'client_nonce');
+  end if;
+  if p_region_slug is null or char_length(p_region_slug) > 48 then
+    return jsonb_build_object('ok', false, 'code', 'unknown_region');
+  end if;
+
+  select r.id into v_region from public.regions r
+  where r.slug = p_region_slug and r.visibility = 'public';
+  if not found then
+    return jsonb_build_object('ok', false, 'code', 'unknown_region');
+  end if;
+
+  -- Serialize all submissions from this actor.
+  perform pg_advisory_xact_lock(hashtextextended('trace:' || v_actor::text, 0));
+
+  -- Idempotency: the same nonce from the same actor returns the original result.
+  select t.id, t.world_event_id, t.energy_gain, r.slug as region_slug into v_existing
+  from public.traces t join public.regions r on r.id = t.region_id
+  where t.actor_id = v_actor and t.client_nonce = p_client_nonce;
+  if found then
+    return jsonb_build_object('ok', true, 'duplicate', true, 'trace_id', v_existing.id,
+      'event_id', v_existing.world_event_id, 'energy_gain', v_existing.energy_gain,
+      'region', jsonb_build_object('slug', v_existing.region_slug));
+  end if;
+
+  -- Rate limits. Guests get tighter limits than verified accounts.
+  if v_is_anon then
+    v_cooldown := 20; v_hour_limit := 12; v_day_limit := 40;
+  else
+    v_cooldown := 10; v_hour_limit := 30; v_day_limit := 120;
+  end if;
+
+  select max(t.created_at),
+         count(*) filter (where t.created_at > v_now - interval '1 hour'),
+         min(t.created_at) filter (where t.created_at > v_now - interval '1 hour'),
+         count(*) filter (where t.created_at >= public.utc_day_start(v_now))
+    into v_last, v_hour_count, v_hour_oldest, v_day_count
+  from public.traces t
+  where t.actor_id = v_actor and t.created_at > v_now - interval '1 day';
+
+  if v_last is not null and v_last > v_now - make_interval(secs => v_cooldown) then
+    perform public.log_rate_limit(v_actor, 'trace', 'cooldown');
+    return jsonb_build_object('ok', false, 'code', 'cooldown',
+      'retry_after', ceil(extract(epoch from (v_last + make_interval(secs => v_cooldown) - v_now))));
+  end if;
+  if v_hour_count >= v_hour_limit then
+    perform public.log_rate_limit(v_actor, 'trace', 'hourly_limit');
+    return jsonb_build_object('ok', false, 'code', 'hourly_limit',
+      'retry_after', ceil(extract(epoch from (v_hour_oldest + interval '1 hour' - v_now))));
+  end if;
+  if v_day_count >= v_day_limit then
+    perform public.log_rate_limit(v_actor, 'trace', 'daily_limit');
+    return jsonb_build_object('ok', false, 'code', 'daily_limit',
+      'retry_after', ceil(extract(epoch from (public.utc_day_start(v_now) + interval '1 day' - v_now))));
+  end if;
+
+  -- Global circuit breaker against floods from many sessions.
+  select count(*) into v_global_minute from public.traces t where t.created_at > v_now - interval '1 minute';
+  if v_global_minute >= 600 then
+    perform public.log_rate_limit(v_actor, 'trace', 'global_busy');
+    return jsonb_build_object('ok', false, 'code', 'busy', 'retry_after', 30);
+  end if;
+
+  begin
+    -- 2. Region row lock.
+    select r.* into v_region from public.regions r where r.id = v_region.id for update;
+    select a.* into v_arch from public.region_archetypes a where a.region_type = v_region.region_type;
+
+    v_decayed := public.world_decay(v_region.energy, v_region.energy_at, v_arch.half_life_hours, v_now);
+
+    select count(*) into v_recent_same from public.traces t
+    where t.region_id = v_region.id and t.actor_id = v_actor and t.created_at > v_now - interval '1 hour';
+
+    v_match := v_arch.resonance_bonus > 0
+      and v_region.last_trace_pattern = p_trace_type
+      and v_region.last_trace_at > v_now - interval '10 minutes'
+      and v_region.last_trace_actor is distinct from v_actor;
+
+    v_gain := public.trace_gain(v_intensity, v_arch.gain_multiplier, v_recent_same, v_arch.resonance_bonus, v_match);
+    v_energy := least(100, v_decayed + v_gain);
+    v_old_state := public.region_state_for(v_decayed);
+    v_new_state := public.region_state_for(v_energy);
+    v_new_level := public.region_level_for(v_region.trace_count + 1);
+
+    v_actor_new_region := not exists (select 1 from public.traces t where t.region_id = v_region.id and t.actor_id = v_actor);
+    v_actor_new_global := not exists (select 1 from public.traces t where t.actor_id = v_actor);
+
+    select p.display_name into v_alias from public.profiles p where p.id = v_actor;
+    v_alias := coalesce(v_alias, public.alias_for(v_actor));
+
+    update public.regions set
+      energy = v_energy,
+      energy_at = v_now,
+      state = v_new_state,
+      level = v_new_level,
+      trace_count = trace_count + 1,
+      contributor_count = contributor_count + (case when v_actor_new_region then 1 else 0 end),
+      last_trace_at = v_now,
+      last_trace_pattern = p_trace_type,
+      last_trace_actor = v_actor
+    where id = v_region.id;
+
+    -- 3. World row lock.
+    select w.* into v_world from public.world_state w where w.id = 1 for update;
+    v_total := v_world.total_traces + 1;
+    v_contrib := v_world.unique_contributors + (case when v_actor_new_global then 1 else 0 end);
+    v_stage := greatest(v_world.evolution_stage, public.stage_for(v_total, v_contrib));
+    v_version := v_world.state_version;
+
+    update public.world_state set
+      total_traces = v_total,
+      unique_contributors = v_contrib,
+      evolution_stage = v_stage,
+      stage_changed_at = case when v_stage > v_world.evolution_stage then v_now else stage_changed_at end,
+      updated_at = v_now
+    where id = 1;
+
+    if v_stage > v_world.evolution_stage then
+      v_born := public.birth_region_for_stage(v_stage);
+      v_structural := true;
+    end if;
+    if v_new_level > v_region.level then
+      v_structural := true;
+    end if;
+    if v_structural then
+      v_version := public.record_snapshot(
+        case when v_stage > v_world.evolution_stage then 'Stage ' || v_stage || ': ' || public.stage_name(v_stage)
+             else v_region.name || ' reached level ' || v_new_level end);
+    end if;
+
+    v_event_id := public.emit_event('trace', 'participant', v_region.id, jsonb_build_object(
+      'alias', v_alias, 'color', v_color, 'pattern', p_trace_type, 'intensity', v_intensity,
+      'persistence', p_persistence, 'gain', v_gain, 'resonance', v_match,
+      'region_slug', v_region.slug, 'region_energy', v_energy, 'region_state', v_new_state,
+      'region_level', v_new_level, 'region_trace_count', v_region.trace_count + 1,
+      'energy_at', v_now, 'total_traces', v_total, 'unique_contributors', v_contrib,
+      'evolution_stage', v_stage
+    ), v_version);
+
+    insert into public.traces (id, region_id, actor_id, client_nonce, trace_type, color, intensity,
+                               persistence, energy_gain, alias, world_event_id, created_at)
+    values (v_trace_id, v_region.id, v_actor, p_client_nonce, p_trace_type, v_color, v_intensity,
+            p_persistence, v_gain, v_alias, v_event_id, v_now);
+
+    -- Milestones -------------------------------------------------------
+    if v_world.total_traces = 0 then
+      v_mid := public.emit_event('first_trace', 'participant', v_region.id,
+        jsonb_build_object('alias', v_alias, 'region_slug', v_region.slug), v_version);
+      v_slug := public.create_discovery('the-first-trace', 'first_trace', 'participant', v_region.id, v_mid,
+        'The first trace',
+        format('The first trace ever accepted by the organism was left in %s. Everything that follows grew from this moment.', v_region.name),
+        v_alias, v_trace_id, v_version);
+      v_milestones := v_milestones || jsonb_build_object('type', 'first_trace', 'discovery', v_slug);
+    end if;
+
+    if v_region.trace_count = 0 then
+      v_mid := public.emit_event('region_first_trace', 'participant', v_region.id,
+        jsonb_build_object('alias', v_alias, 'region_slug', v_region.slug), v_version);
+      v_slug := public.create_discovery('first-trace-in-' || v_region.slug, 'region_first_trace', 'participant',
+        v_region.id, v_mid, 'First trace in ' || v_region.name,
+        format('%s received its first trace from a visitor. Until then it existed only as its initial generated structure.', v_region.name),
+        v_alias, v_trace_id, v_version);
+      v_milestones := v_milestones || jsonb_build_object('type', 'region_first_trace', 'discovery', v_slug);
+    end if;
+
+    if v_new_state in ('surging', 'resonant') and v_old_state not in ('surging', 'resonant')
+       and (v_region.last_surge_at is null or v_region.last_surge_at < v_now - interval '6 hours') then
+      update public.regions set last_surge_at = v_now where id = v_region.id;
+      v_mid := public.emit_event('region_surge', 'participant', v_region.id,
+        jsonb_build_object('alias', v_alias, 'region_slug', v_region.slug, 'energy', v_energy, 'state', v_new_state),
+        v_version);
+      v_slug := public.create_discovery(
+        v_region.slug || '-surge-' || to_char(v_now at time zone 'UTC', 'YYYYMMDD-HH24MI'),
+        'region_surge', 'participant', v_region.id, v_mid,
+        v_region.name || ' surged',
+        format('Recent traces pushed %s above %s energy. Its filaments brightened and its pulse quickened.', v_region.name, 45),
+        v_alias, v_trace_id, v_version);
+      v_milestones := v_milestones || jsonb_build_object('type', 'region_surge', 'discovery', v_slug);
+    end if;
+
+    if v_new_level > v_region.level then
+      v_mid := public.emit_event('region_level', 'participant', v_region.id,
+        jsonb_build_object('alias', v_alias, 'region_slug', v_region.slug, 'level', v_new_level,
+                           'trace_count', v_region.trace_count + 1), v_version);
+      v_slug := public.create_discovery(v_region.slug || '-level-' || v_new_level, 'region_level', 'participant',
+        v_region.id, v_mid, v_region.name || ' grew new branches',
+        format('After %s accepted traces, %s reached level %s and grew a new layer of branches.',
+               v_region.trace_count + 1, v_region.name, v_new_level),
+        v_alias, v_trace_id, v_version);
+      v_milestones := v_milestones || jsonb_build_object('type', 'region_level', 'discovery', v_slug);
+    end if;
+
+    if v_stage > v_world.evolution_stage then
+      v_mid := public.emit_event('stage_advanced', 'participant', null,
+        jsonb_build_object('alias', v_alias, 'stage', v_stage, 'stage_name', public.stage_name(v_stage),
+                           'total_traces', v_total, 'unique_contributors', v_contrib), v_version);
+      v_slug := public.create_discovery('stage-' || v_stage || '-' || lower(replace(public.stage_name(v_stage), ' ', '-')),
+        'stage_advanced', 'participant', null, v_mid,
+        'The organism entered ' || public.stage_name(v_stage),
+        format('With %s accepted traces from %s distinct visitors, the organism evolved to stage %s: %s.',
+               v_total, v_contrib, v_stage, public.stage_name(v_stage)),
+        v_alias, v_trace_id, v_version);
+      v_milestones := v_milestones || jsonb_build_object('type', 'stage_advanced', 'discovery', v_slug, 'stage', v_stage);
+
+      if v_born is not null then
+        select r.* into v_born_region from public.regions r where r.id = v_born;
+        v_mid := public.emit_event('region_born', 'system', v_born,
+          jsonb_build_object('region_slug', v_born_region.slug, 'name', v_born_region.name, 'stage', v_stage), v_version);
+        v_slug := public.create_discovery('born-' || v_born_region.slug, 'region_born', 'system', v_born, v_mid,
+          v_born_region.name || ' formed',
+          format('Reaching %s caused a new region to grow from The Core: %s. Its structure is generated from a fixed seed, so it forms the same way every time.',
+                 public.stage_name(v_stage), v_born_region.name),
+          null, null, v_version);
+        v_milestones := v_milestones || jsonb_build_object('type', 'region_born', 'discovery', v_slug);
+      end if;
+    end if;
+
+    -- Community event progress.
+    perform public.ensure_daily_community_event(v_now);
+    select ce.* into v_ce from public.community_events ce
+    where ce.status = 'active' and ce.region_id = v_region.id
+      and ce.starts_at <= v_now and ce.ends_at > v_now
+    limit 1;
+    if found then
+      select count(distinct t.actor_id) into v_progress from public.traces t
+      where t.region_id = v_ce.region_id and t.created_at >= v_ce.starts_at and t.created_at < v_ce.ends_at;
+      if v_progress >= v_ce.goal_target then
+        update public.community_events set status = 'completed', completed_at = v_now
+        where id = v_ce.id and status = 'active';
+        if found then
+          v_mid := public.emit_event('community_event_completed', 'participant', v_region.id,
+            jsonb_build_object('community_event', v_ce.slug, 'title', v_ce.title, 'goal_target', v_ce.goal_target,
+                               'progress', v_progress, 'region_slug', v_region.slug, 'alias', v_alias), v_version);
+          v_slug := public.create_discovery(v_ce.slug, 'community_event', 'participant', v_region.id, v_mid,
+            v_ce.title || ' completed',
+            format('%s different visitors left traces in %s on %s (UTC). The region converged.',
+                   v_progress, v_region.name, to_char(v_ce.starts_at at time zone 'UTC', 'YYYY-MM-DD')),
+            v_alias, v_trace_id, v_version);
+          v_milestones := v_milestones || jsonb_build_object('type', 'community_event_completed', 'discovery', v_slug);
+        end if;
+      end if;
+    end if;
+
+    -- Global energy milestones (25 / 50 / 75), each at most once per UTC day.
+    v_global := public.current_world_energy(v_now);
+    v_level_mark := case when v_global >= 75 then 75 when v_global >= 50 then 50 when v_global >= 25 then 25 else 0 end;
+    if v_level_mark > 0 and (v_world.energy_milestone_day is distinct from (v_now at time zone 'UTC')::date
+                             or v_level_mark > v_world.energy_milestone_level) then
+      update public.world_state set energy_milestone_day = (v_now at time zone 'UTC')::date,
+                                    energy_milestone_level = v_level_mark
+      where id = 1;
+      v_mid := public.emit_event('energy_milestone', 'participant', null,
+        jsonb_build_object('level', v_level_mark, 'global_energy', v_global, 'alias', v_alias), v_version);
+      if v_level_mark = 75 then
+        v_slug := public.create_discovery('energy-75-' || to_char(v_now at time zone 'UTC', 'YYYY-MM-DD'),
+          'energy_milestone', 'participant', null, v_mid, 'The whole organism glowed',
+          'Average energy across every region passed 75 — the organism was brighter than it had been all day.',
+          v_alias, v_trace_id, v_version);
+        v_milestones := v_milestones || jsonb_build_object('type', 'energy_milestone', 'discovery', v_slug);
+      else
+        v_milestones := v_milestones || jsonb_build_object('type', 'energy_milestone', 'level', v_level_mark);
+      end if;
+    end if;
+
+    update public.world_state set global_energy = least(100, v_global) where id = 1;
+
+    return jsonb_build_object(
+      'ok', true,
+      'duplicate', false,
+      'trace_id', v_trace_id,
+      'event_id', v_event_id,
+      'alias', v_alias,
+      'energy_gain', v_gain,
+      'resonance', v_match,
+      'region', jsonb_build_object('slug', v_region.slug, 'name', v_region.name, 'energy', v_energy,
+                                   'state', v_new_state, 'level', v_new_level),
+      'world', jsonb_build_object('total_traces', v_total, 'unique_contributors', v_contrib,
+                                  'evolution_stage', v_stage, 'state_version', v_version,
+                                  'global_energy', v_global),
+      'milestones', v_milestones,
+      'created_at', v_now
+    );
+  exception when others then
+    insert into public.system_errors (source, code, message, context)
+    values ('submit_trace', sqlstate, left(sqlerrm, 500), jsonb_build_object('region', p_region_slug));
+    return jsonb_build_object('ok', false, 'code', 'internal_error',
+      'message', 'The organism could not accept this trace. Nothing was recorded.');
+  end;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Public reads.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.region_public_json(p_region public.regions, p_at timestamptz) returns jsonb
+language sql stable set search_path = '' as $$
+  select jsonb_build_object(
+    'id', p_region.id, 'slug', p_region.slug, 'name', p_region.name, 'type', p_region.region_type,
+    'description', p_region.description, 'seed', p_region.generation_seed, 'hue', p_region.hue,
+    'anchor', jsonb_build_array(p_region.anchor_x, p_region.anchor_y, p_region.anchor_z),
+    'parent', (select p.slug from public.regions p where p.id = p_region.parent_region_id),
+    'origin', p_region.origin, 'unlocked_at_stage', p_region.unlocked_at_stage,
+    'energy', public.world_decay(p_region.energy, p_region.energy_at, a.half_life_hours, p_at),
+    'state', public.region_state_for(public.world_decay(p_region.energy, p_region.energy_at, a.half_life_hours, p_at)),
+    'stored_energy', p_region.energy, 'energy_at', p_region.energy_at,
+    'level', p_region.level, 'trace_count', p_region.trace_count,
+    'contributor_count', p_region.contributor_count, 'last_trace_at', p_region.last_trace_at,
+    'half_life_hours', a.half_life_hours, 'gain_multiplier', a.gain_multiplier,
+    'resonance_bonus', a.resonance_bonus, 'created_at', p_region.created_at
+  )
+  from public.region_archetypes a where a.region_type = p_region.region_type
+$$;
+
+create or replace function public.get_world_snapshot() returns jsonb
+language plpgsql volatile security definer set search_path = '' as $$
+declare
+  v_now timestamptz := now();
+  v_world record;
+  v_ce record;
+  v_progress integer;
+begin
+  perform public.ensure_daily_community_event(v_now);
+  select * into v_world from public.world_state where id = 1;
+
+  select ce.*, r.slug as region_slug, r.name as region_name into v_ce
+  from public.community_events ce join public.regions r on r.id = ce.region_id
+  where ce.starts_at <= v_now and ce.ends_at > v_now
+  order by ce.starts_at desc limit 1;
+  if found then
+    select count(distinct t.actor_id) into v_progress from public.traces t
+    where t.region_id = v_ce.region_id and t.created_at >= v_ce.starts_at and t.created_at < v_ce.ends_at;
+  end if;
+
+  return jsonb_build_object(
+    'server_time', v_now,
+    'world', jsonb_build_object(
+      'state_version', v_world.state_version,
+      'evolution_stage', v_world.evolution_stage,
+      'stage_name', public.stage_name(v_world.evolution_stage),
+      'stage_changed_at', v_world.stage_changed_at,
+      'total_traces', v_world.total_traces,
+      'unique_contributors', v_world.unique_contributors,
+      'global_energy', public.current_world_energy(v_now),
+      'world_seed', v_world.world_seed
+    ),
+    'regions', coalesce((select jsonb_agg(public.region_public_json(r, v_now) order by r.created_at, r.slug)
+                         from public.regions r where r.visibility = 'public'), '[]'::jsonb),
+    'stats', jsonb_build_object(
+      'contributors_today', (select count(distinct actor_id) from public.traces where created_at >= public.utc_day_start(v_now)),
+      'traces_today', (select count(*) from public.traces where created_at >= public.utc_day_start(v_now)),
+      'contributors_last_5m', (select count(distinct actor_id) from public.traces where created_at > v_now - interval '5 minutes'),
+      'traces_last_hour', (select count(*) from public.traces where created_at > v_now - interval '1 hour'),
+      'discoveries_total', (select count(*) from public.discoveries where visibility = 'public'),
+      'participant_discoveries', (select count(*) from public.discoveries where visibility = 'public' and origin = 'participant')
+    ),
+    'community_event', case when v_ce.id is null then null else jsonb_build_object(
+      'slug', v_ce.slug, 'title', v_ce.title, 'description', v_ce.description,
+      'region_slug', v_ce.region_slug, 'region_name', v_ce.region_name,
+      'goal_target', v_ce.goal_target, 'progress', coalesce(v_progress, 0),
+      'status', v_ce.status, 'starts_at', v_ce.starts_at, 'ends_at', v_ce.ends_at) end,
+    'latest_event_id', (select max(id) from public.world_events),
+    'last_meaningful_event', (select jsonb_build_object('id', e.id, 'event_type', e.event_type, 'origin', e.origin,
+                                     'payload', e.payload, 'created_at', e.created_at,
+                                     'region_slug', (select slug from public.regions where id = e.region_id))
+                              from public.world_events e
+                              where not e.hidden and e.event_type <> 'trace'
+                              order by e.id desc limit 1),
+    'flags', (select coalesce(jsonb_object_agg(key, enabled), '{}'::jsonb) from public.feature_flags)
+  );
+end
+$$;
+
+create or replace function public.get_region_detail(p_slug text) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_now timestamptz := now();
+  v_region public.regions;
+begin
+  select * into v_region from public.regions where slug = p_slug and visibility = 'public';
+  if not found then
+    return null;
+  end if;
+  return public.region_public_json(v_region, v_now) || jsonb_build_object(
+    'archetype', (select jsonb_build_object('label', a.label, 'description', a.description)
+                  from public.region_archetypes a where a.region_type = v_region.region_type),
+    'stats', jsonb_build_object(
+      'traces_24h', (select count(*) from public.traces where region_id = v_region.id and created_at > v_now - interval '24 hours'),
+      'contributors_24h', (select count(distinct actor_id) from public.traces where region_id = v_region.id and created_at > v_now - interval '24 hours'),
+      'contributors_7d', (select count(distinct actor_id) from public.traces where region_id = v_region.id and created_at > v_now - interval '7 days'),
+      'discoveries', (select count(*) from public.discoveries where region_id = v_region.id and visibility = 'public')
+    )
+  );
+end
+$$;
+
+-- Daily feature, chosen by a published rule:
+--  1. a participant discovery from the previous UTC day, picked by md5(day || slug);
+--  2. otherwise any public discovery from the last 30 days, same ordering;
+--  3. otherwise the public region with the highest current energy.
+create or replace function public.get_daily_feature() returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_now timestamptz := now();
+  v_day text := to_char(v_now at time zone 'UTC', 'YYYY-MM-DD');
+  v_d record;
+  v_r public.regions;
+begin
+  select d.slug, d.title, d.description, d.kind, d.origin, d.created_at into v_d
+  from public.discoveries d
+  where d.visibility = 'public' and d.origin = 'participant'
+    and d.created_at >= public.utc_day_start(v_now) - interval '1 day'
+    and d.created_at < public.utc_day_start(v_now)
+  order by md5(v_day || d.slug) limit 1;
+  if found then
+    return jsonb_build_object('kind', 'discovery', 'rule', 'participant_discovery_yesterday', 'day', v_day,
+      'discovery', to_jsonb(v_d));
+  end if;
+
+  select d.slug, d.title, d.description, d.kind, d.origin, d.created_at into v_d
+  from public.discoveries d
+  where d.visibility = 'public' and d.created_at > v_now - interval '30 days' and d.kind <> 'initial_structure'
+  order by md5(v_day || d.slug) limit 1;
+  if found then
+    return jsonb_build_object('kind', 'discovery', 'rule', 'recent_discovery', 'day', v_day,
+      'discovery', to_jsonb(v_d));
+  end if;
+
+  select r.* into v_r from public.regions r
+  join public.region_archetypes a using (region_type)
+  where r.visibility = 'public'
+  order by public.world_decay(r.energy, r.energy_at, a.half_life_hours, v_now) desc, md5(v_day || r.slug)
+  limit 1;
+  if not found then
+    return null;
+  end if;
+  return jsonb_build_object('kind', 'region', 'rule', 'featured_region', 'day', v_day,
+    'region', public.region_public_json(v_r, v_now));
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Maintenance (pg_cron, the world-tick Edge Function, or an admin).
+-- ---------------------------------------------------------------------------
+create or replace function public.run_world_maintenance() returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_now timestamptz := now();
+  v_pruned_events integer;
+  v_pruned_limits integer;
+  v_pruned_errors integer;
+  v_pruned_analytics integer;
+  v_regions integer := 0;
+  v_r record;
+begin
+  perform public.ensure_daily_community_event(v_now);
+
+  -- Retention: individual trace events 30 days (traces themselves are kept),
+  -- rate-limit aggregates 14 days, error log 30 days, analytics 400 days.
+  delete from public.world_events where event_type = 'trace' and created_at < v_now - interval '30 days';
+  get diagnostics v_pruned_events = row_count;
+  delete from public.rate_limit_events where window_start < v_now - interval '14 days';
+  get diagnostics v_pruned_limits = row_count;
+  delete from public.system_errors where created_at < v_now - interval '30 days';
+  get diagnostics v_pruned_errors = row_count;
+  delete from public.analytics_daily where day < (v_now at time zone 'UTC')::date - 400;
+  get diagnostics v_pruned_analytics = row_count;
+
+  -- Fold decay into stored values (same lock order as submit_trace).
+  for v_r in
+    select r.id, r.energy, r.energy_at, a.half_life_hours
+    from public.regions r join public.region_archetypes a using (region_type)
+    order by r.id
+    for update of r
+  loop
+    update public.regions set
+      energy = public.world_decay(v_r.energy, v_r.energy_at, v_r.half_life_hours, v_now),
+      energy_at = v_now,
+      state = public.region_state_for(public.world_decay(v_r.energy, v_r.energy_at, v_r.half_life_hours, v_now))
+    where id = v_r.id;
+    v_regions := v_regions + 1;
+  end loop;
+
+  update public.world_state set global_energy = least(100, public.current_world_energy(v_now)), updated_at = v_now
+  where id = 1;
+
+  return jsonb_build_object('ok', true, 'ran_at', v_now, 'regions_refreshed', v_regions,
+    'pruned_trace_events', v_pruned_events, 'pruned_rate_limit_rows', v_pruned_limits,
+    'pruned_errors', v_pruned_errors, 'pruned_analytics_rows', v_pruned_analytics);
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Visitor utilities.
+-- ---------------------------------------------------------------------------
+
+create or replace function public.submit_report(
+  p_target_type text, p_target_id text, p_reason text, p_details text
+) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_actor uuid := auth.uid();
+  v_count integer;
+  v_details text := nullif(left(trim(coalesce(p_details, '')), 500), '');
+begin
+  if v_actor is null then
+    return jsonb_build_object('ok', false, 'code', 'no_session');
+  end if;
+  if not public.flag_enabled('reports_enabled') then
+    return jsonb_build_object('ok', false, 'code', 'feature_disabled');
+  end if;
+  if p_target_type not in ('world_event', 'discovery') or p_reason not in ('offensive_name', 'spam', 'harassment', 'other')
+     or p_target_id is null or char_length(p_target_id) > 64 then
+    return jsonb_build_object('ok', false, 'code', 'invalid_parameters');
+  end if;
+  if p_target_type = 'world_event' and (p_target_id !~ '^[0-9]{1,18}$'
+       or not exists (select 1 from public.world_events where id = p_target_id::bigint and not hidden)) then
+    return jsonb_build_object('ok', false, 'code', 'not_found');
+  end if;
+  if p_target_type = 'discovery' and not exists (select 1 from public.discoveries where slug = p_target_id and visibility = 'public') then
+    return jsonb_build_object('ok', false, 'code', 'not_found');
+  end if;
+
+  perform pg_advisory_xact_lock(hashtextextended('report:' || v_actor::text, 0));
+  select count(*) into v_count from public.reports where reporter_id = v_actor and created_at > now() - interval '1 hour';
+  if v_count >= 5 then
+    perform public.log_rate_limit(v_actor, 'report', 'hourly_limit');
+    return jsonb_build_object('ok', false, 'code', 'hourly_limit', 'retry_after', 3600);
+  end if;
+  if exists (select 1 from public.reports where reporter_id = v_actor and target_type = p_target_type
+             and target_id = p_target_id and status = 'open') then
+    return jsonb_build_object('ok', true, 'duplicate', true);
+  end if;
+
+  insert into public.reports (reporter_id, target_type, target_id, reason, details)
+  values (v_actor, p_target_type, p_target_id, p_reason, v_details);
+  return jsonb_build_object('ok', true, 'duplicate', false);
+end
+$$;
+
+-- Client error reports: bounded, globally capped, admin-readable only.
+create or replace function public.log_client_error(p_code text, p_message text, p_route text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if (select count(*) from public.system_errors where source = 'client' and created_at > now() - interval '1 hour') >= 500 then
+    return;
+  end if;
+  insert into public.system_errors (source, code, message, context)
+  values ('client', left(coalesce(p_code, 'unknown'), 60), left(coalesce(p_message, ''), 300),
+          jsonb_build_object('route', left(coalesce(p_route, ''), 120)));
+end
+$$;
+
+-- Aggregate analytics: increments a daily counter for an allow-listed event.
+create or replace function public.track_event(p_event text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if p_event not in ('landing_visit', 'first_interaction', 'trace_submitted', 'discovery_opened',
+                     'share_copy', 'share_native', 'share_card', 'return_visit', 'registration',
+                     'shared_link_visit', 'support_checkout_started') then
+    return;
+  end if;
+  insert into public.analytics_daily (day, event, count)
+  values ((now() at time zone 'UTC')::date, p_event, 1)
+  on conflict (day, event) do update set count = public.analytics_daily.count + 1;
+end
+$$;
+
+create or replace function public.get_my_account() returns jsonb
+language sql stable security definer set search_path = '' as $$
+  select case when auth.uid() is null then null else jsonb_build_object(
+    'id', auth.uid(),
+    'display_name', coalesce((select display_name from public.profiles where id = auth.uid()), public.alias_for(auth.uid())),
+    'avatar_preferences', coalesce((select avatar_preferences from public.profiles where id = auth.uid()), '{}'::jsonb),
+    'roles', coalesce((select jsonb_agg(role) from public.user_roles where user_id = auth.uid()), '[]'::jsonb),
+    'trace_count', (select count(*) from public.traces where actor_id = auth.uid()),
+    'regions_touched', (select count(distinct region_id) from public.traces where actor_id = auth.uid()),
+    'first_trace_at', (select min(created_at) from public.traces where actor_id = auth.uid()),
+    'discoveries_triggered', (select count(*) from public.discoveries d join public.traces t on t.id = d.trigger_trace_id
+                              where t.actor_id = auth.uid() and d.visibility = 'public'),
+    'entitlements', coalesce((select jsonb_agg(jsonb_build_object('entitlement', entitlement, 'status', status,
+                              'current_period_end', current_period_end))
+                              from public.entitlements where user_id = auth.uid()), '[]'::jsonb)
+  ) end
+$$;
+
+-- Deletes the caller's account. Traces stay in the world but are detached
+-- from the account and their public pseudonym is replaced.
+create or replace function public.delete_my_account() returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_actor uuid := auth.uid();
+begin
+  if v_actor is null then
+    return jsonb_build_object('ok', false, 'code', 'no_session');
+  end if;
+  update public.world_events e set payload = jsonb_set(e.payload, '{alias}', '"Former visitor"')
+  where e.payload ? 'alias' and (
+    e.id in (select world_event_id from public.traces where actor_id = v_actor and world_event_id is not null)
+    or e.id in (select d.world_event_id from public.discoveries d join public.traces t on t.id = d.trigger_trace_id
+                where t.actor_id = v_actor and d.world_event_id is not null));
+  update public.discoveries d set triggered_by_alias = 'Former visitor'
+  from public.traces t where t.id = d.trigger_trace_id and t.actor_id = v_actor;
+  update public.traces set alias = 'Former visitor' where actor_id = v_actor;
+  delete from auth.users where id = v_actor;
+  return jsonb_build_object('ok', true);
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Profiles for new auth users (including anonymous guests).
+-- ---------------------------------------------------------------------------
+create or replace function public.validate_display_name() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  new.display_name := regexp_replace(trim(new.display_name), '\s+', ' ', 'g');
+  if exists (select 1 from public.blocked_terms b
+             where position(b.term in lower(replace(replace(new.display_name, ' ', ''), '_', ''))) > 0) then
+    raise exception 'display_name_rejected' using errcode = '22023';
+  end if;
+  return new;
+end
+$$;
+
+create trigger profiles_validate_name before insert or update of display_name on public.profiles
+  for each row execute function public.validate_display_name();
+
+create or replace function public.handle_new_user() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.profiles (id, display_name) values (new.id, public.alias_for(new.id))
+  on conflict (id) do nothing;
+  return new;
+end
+$$;
+
+create trigger on_auth_user_created after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- ---------------------------------------------------------------------------
+-- Function privileges. Supabase grants EXECUTE on new functions to the API
+-- roles by default; revoke everything, then grant only the public API.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  f record;
+begin
+  for f in
+    select p.oid::regprocedure as sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+  loop
+    execute format('revoke all on function %s from public, anon, authenticated', f.sig);
+  end loop;
+end
+$$;
+
+-- Pure formula helpers are harmless and useful for transparency.
+grant execute on function public.world_decay(numeric, timestamptz, numeric, timestamptz) to anon, authenticated;
+grant execute on function public.region_state_for(numeric) to anon, authenticated;
+grant execute on function public.region_level_for(bigint) to anon, authenticated;
+grant execute on function public.stage_for(bigint, integer) to anon, authenticated;
+grant execute on function public.stage_name(smallint) to anon, authenticated;
+grant execute on function public.trace_gain(numeric, numeric, integer, numeric, boolean) to anon, authenticated;
+
+grant execute on function public.get_world_snapshot() to anon, authenticated;
+grant execute on function public.get_region_detail(text) to anon, authenticated;
+grant execute on function public.get_daily_feature() to anon, authenticated;
+grant execute on function public.log_client_error(text, text, text) to anon, authenticated;
+grant execute on function public.track_event(text) to anon, authenticated;
+grant execute on function public.submit_trace(text, text, text, numeric, text, uuid) to authenticated;
+grant execute on function public.submit_report(text, text, text, text) to authenticated;
+grant execute on function public.get_my_account() to authenticated;
+grant execute on function public.delete_my_account() to authenticated;
+
+grant execute on function public.run_world_maintenance() to service_role;

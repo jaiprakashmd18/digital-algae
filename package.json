@@ -1,0 +1,43 @@
+{
+  "name": "internet-organism",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One internet. One living organism. A persistent, community-powered digital world.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "lint": "eslint .",
+    "test": "vitest run --project unit",
+    "test:unit": "vitest run --project unit",
+    "test:db": "vitest run --project db",
+    "test:e2e": "playwright test",
+    "check": "npm run lint && npm run test:unit && npm run build",
+    "test:all": "vitest run",
+    "check:functions": "cd supabase/functions && npx -y deno@2.5.6 check stripe-webhook/index.ts create-checkout/index.ts world-tick/index.ts",
+    "assets": "node scripts/generate-assets.mjs",
+    "db:bundle": "node scripts/bundle-sql.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@supabase/supabase-js": "2.118.0",
+    "lucide": "1.60.0",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.64.1",
+    "eslint": "10.13.0",
+    "globals": "17.13.0",
+    "jsdom": "30.1.3",
+    "pg": "8.23.1",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}

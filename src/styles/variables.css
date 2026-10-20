@@ -1,0 +1,54 @@
+:root {
+  color-scheme: dark;
+
+  /* Palette */
+  --bg: #04060c;
+  --bg-2: #070b16;
+  --bg-elevated: rgba(10, 16, 30, 0.72);
+  --bg-solid: #0a1020;
+  --line: rgba(160, 200, 255, 0.12);
+  --line-strong: rgba(160, 200, 255, 0.24);
+  --text: #eef4ff;
+  --text-muted: #96a6c0;
+  --text-faint: #6c7c97;
+  --cyan: #5ee7ff;
+  --violet: #9b87ff;
+  --green: #7dffb2;
+  --amber: #ffd27a;
+  --danger: #ff8a8a;
+  --focus: #9ff1ff;
+
+  /* Typography */
+  --font-sans: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.875rem;
+  --fs-md: 1rem;
+  --fs-lg: 1.25rem;
+  --fs-xl: clamp(1.6rem, 1.1rem + 2vw, 2.4rem);
+  --fs-hero: clamp(2rem, 1.2rem + 3.4vw, 3.6rem);
+
+  /* Spacing & shape */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 72px;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --header-h: 60px;
+  --page-w: 1080px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --blur: blur(14px) saturate(130%);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ease: linear;
+  }
+}
