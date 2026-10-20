@@ -3,8 +3,10 @@ import { prerenderPlugin } from './scripts/prerender.js';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
-  // Used in index.html meta tags; falls back to a local URL in development.
-  process.env.VITE_PUBLIC_SITE_URL = (env.VITE_PUBLIC_SITE_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  // Used in index.html meta tags and share links. On Vercel, fall back to the
+  // project's production domain (or the deployment URL) if not set explicitly.
+  const vercelHost = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
+  process.env.VITE_PUBLIC_SITE_URL = (env.VITE_PUBLIC_SITE_URL || (vercelHost ? `https://${vercelHost}` : 'http://localhost:5173')).replace(/\/+$/, '');
   for (const key of Object.keys(env)) {
     if (/SERVICE_ROLE|SECRET/i.test(key)) {
       throw new Error(`Refusing to build: ${key} looks like a secret and must not be prefixed with VITE_.`);
