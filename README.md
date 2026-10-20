@@ -82,7 +82,8 @@ npx supabase link --project-ref <your-project-ref>
 npx supabase db push
 ```
 
-(Alternative: paste each file from `supabase/migrations/` into the SQL editor, in order.)
+No CLI? Run `npm run db:bundle`, open the generated `supabase/setup-all-in-one.sql`,
+paste it into **Dashboard → SQL Editor** and click **Run** (once, on a fresh project).
 
 ### 8. Seed the initial world
 

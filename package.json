@@ -19,7 +19,8 @@
     "check": "npm run lint && npm run test:unit && npm run build",
     "test:all": "vitest run",
     "check:functions": "cd supabase/functions && npx -y deno@2.5.6 check stripe-webhook/index.ts create-checkout/index.ts world-tick/index.ts",
-    "assets": "node scripts/generate-assets.mjs"
+    "assets": "node scripts/generate-assets.mjs",
+    "db:bundle": "node scripts/bundle-sql.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
