@@ -17,6 +17,8 @@ const ADMIN_URL = process.env.TEST_DATABASE_URL ?? 'postgres://postgres:postgres
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export const anon = { kind: 'anon' };
+/** A signed-out visitor whose request arrives from `ip` (header set by the gateway). */
+export const visitor = (ip) => ({ kind: 'anon', ip });
 export const service = { kind: 'service' };
 export const guest = (id) => ({ kind: 'user', id, anonymous: true });
 export const account = (id) => ({ kind: 'user', id, anonymous: false });
@@ -53,6 +55,7 @@ export async function setupDb() {
       await c.query('begin');
       if (who.kind === 'anon') {
         await c.query(`select set_config('request.jwt.claims', '{"role":"anon"}', true)`);
+        if (who.ip) await c.query(`select set_config('request.headers', $1, true)`, [JSON.stringify({ 'cf-connecting-ip': who.ip })]);
         await c.query('set local role anon');
       } else if (who.kind === 'user') {
         await c.query(`select set_config('request.jwt.claims', $1, true)`, [JSON.stringify({ sub: who.id, role: 'authenticated', is_anonymous: who.anonymous })]);

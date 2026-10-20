@@ -42,6 +42,9 @@ export const TRACE_PERSISTENCE = Object.freeze(['fleeting', 'lasting']);
 
 /** Server-enforced limits (shown to visitors; the database is the authority). */
 export const LIMITS = Object.freeze({
+  // Signed-out visitors, limited per connection (shared by everyone on it).
+  anonymous: { cooldownSeconds: 15, perHour: 20, perDay: 60 },
+  // Legacy Supabase anonymous sessions, if any still exist.
   guest: { cooldownSeconds: 20, perHour: 12, perDay: 40 },
   account: { cooldownSeconds: 10, perHour: 30, perDay: 120 },
   diminishingFactor: 0.6,

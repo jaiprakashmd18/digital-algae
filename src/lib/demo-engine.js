@@ -148,7 +148,7 @@ function progressOf(state, ce) {
 
 /**
  * Mirrors public.submit_trace(). Mutates state and returns the same result
- * shape. `actor` is { id, isAnonymous, alias }.
+ * shape. `actor` is { id, kind: 'anonymous' | 'account', alias } (or legacy { isAnonymous }).
  */
 export function submitTrace(state, actor, draft, now = Date.now()) {
   if (!actor?.id) return { ok: false, code: 'no_session' };
@@ -163,7 +163,7 @@ export function submitTrace(state, actor, draft, now = Date.now()) {
     return { ok: true, duplicate: true, trace_id: existing.id, event_id: existing.world_event_id, energy_gain: existing.energy_gain, region: { slug: regionSlug } };
   }
 
-  const limits = actor.isAnonymous ? LIMITS.guest : LIMITS.account;
+  const limits = actor.kind === 'anonymous' ? LIMITS.anonymous : actor.kind === 'account' || !actor.isAnonymous ? LIMITS.account : LIMITS.guest;
   const mine = state.traces.filter((t) => t.actor_id === actor.id && Date.parse(t.created_at) > now - DAY);
   const last = mine.reduce((m, t) => Math.max(m, Date.parse(t.created_at)), 0);
   const inHour = mine.filter((t) => Date.parse(t.created_at) > now - HOUR);

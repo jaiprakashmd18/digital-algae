@@ -9,7 +9,7 @@ in the world. Regions grow branches, the organism evolves through stages,
 and milestones become public discoveries with stable links.
 
 * Frontend: HTML, CSS, vanilla JavaScript (ES modules), Three.js with a Canvas 2D fallback, built with Vite.
-* Backend: Supabase — Postgres with Row Level Security, Auth (anonymous guests + email), Realtime, Edge Functions.
+* Backend: Supabase — Postgres with Row Level Security, Auth (optional email accounts — participation is completely anonymous), Realtime, Edge Functions.
 * Hosting: Vercel (static build + two small functions for link previews and the sitemap).
 
 Further reading: [Architecture](docs/ARCHITECTURE.md) · [Security](docs/SECURITY.md) · [Deployment](docs/DEPLOYMENT.md)
@@ -95,7 +95,7 @@ runs migrations and `supabase/seed.sql`.
 ### 9. Configure authentication and redirect URLs
 
 In **Authentication**:
-* enable **Anonymous sign-ins** (guests need it to leave traces),
+* nothing to enable for visitors: traces are completely anonymous and need no sign-in,
 * keep email confirmation on,
 * set **Site URL** to your site and add redirect URLs `…/profile` and `…/reset-password`
   (for local development: `http://localhost:5173/profile` and `/reset-password`).
@@ -171,7 +171,8 @@ Site URL and redirect URLs, and the `SITE_URL` secret, then redeploy.
 | --- | --- |
 | Demo banner on the live site | `VITE_SUPABASE_URL`/key missing in Vercel, or set after the build — redeploy. |
 | "A secret Supabase key was configured… refused" | You used the service-role/secret key. Use the publishable/anon key. |
-| "Guest contributions are not enabled" | Enable Anonymous sign-ins in Supabase Auth. |
+| "Could not recognise this connection" | The client IP header did not reach the database; see docs/SECURITY.md ("Verify on your live project"). |
+| "Anonymous traces are paused" | Turn `anonymous_traces_enabled` back on in `/admin`. |
 | Header stays "Reconnecting" | Check Realtime is enabled and `world_events` is in the `supabase_realtime` publication; check the CSP if you use a custom Supabase domain. |
 | Confirmation/reset emails link to localhost | Fix Site URL and redirect URLs in Supabase Auth. |
 | `/admin` says no operator access | Insert your user into `public.user_roles` (step 15). |
@@ -204,7 +205,7 @@ delivery and email auth are only exercised against a real project.
   breathing scaled by real energy; automatic quality scaling and a Canvas 2D fallback.
 * Shared persistent world: regions, energy with decay, levels, stages, new
   regions, snapshots, discoveries, daily Convergence, energy milestones.
-* Leave Your Trace without an account (anonymous guest session), with
+* Leave Your Trace completely anonymously (no account, no sign-in), with
   server-side validation, rate limits, idempotent retries, confirmation and a
   shareable PNG trace card.
 * Live statistics with explicit time windows, realtime updates, presence,
@@ -229,10 +230,11 @@ delivery and email auth are only exercised against a real project.
 
 ## Known limitations
 
-* Abuse controls are per session plus Supabase's per-IP limits on sign-ups;
-  there is no CAPTCHA by default and a well-resourced bot farm can still create
-  guest sessions (bounded by the global breaker and distinct-contributor
-  thresholds).
+* Anonymous limits apply per internet connection: people sharing one (an
+  office, a mobile carrier) share an allowance and count as one visitor, and
+  someone with many IP addresses can bypass them (bounded by the global breaker,
+  distinct-contributor thresholds and the `anonymous_traces_enabled` switch).
+  There is no CAPTCHA.
 * The `world_state` row serialises all traces (fine for hundreds per second).
 * Hidden events are removed from other clients on their next reconciliation,
   not instantly.
@@ -246,7 +248,8 @@ delivery and email auth are only exercised against a real project.
 
 ## Launch checklist (requires you)
 
-- [ ] Supabase project created; migrations pushed; anonymous sign-ins enabled
+- [ ] Supabase project created; migrations pushed
+- [ ] Two traces from two different networks raise `unique_contributors` by two (IP header reaches the database)
 - [ ] Auth Site URL and redirect URLs set for the production domain
 - [ ] Email sender configured (Supabase's default sender is rate-limited; set up custom SMTP)
 - [ ] Vercel project with the production environment variables

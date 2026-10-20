@@ -27,7 +27,7 @@ export function createDemoBackend({ storage = { get: localGet, set: localSet }, 
   function actor() {
     let a = storage.get(ACTOR_KEY);
     if (!a) {
-      a = { id: `demo-guest-${crypto.randomUUID()}`, isAnonymous: true };
+      a = { id: `demo-visitor-${crypto.randomUUID()}`, kind: 'anonymous' };
       storage.set(ACTOR_KEY, a);
     }
     return a;

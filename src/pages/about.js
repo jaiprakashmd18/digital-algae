@@ -14,7 +14,7 @@ export function render() {
       h('h2', {}, 'How participation works'),
       h('ul', {},
         h('li', {}, 'Explore without signing up: rotate, zoom, open regions, read discoveries.'),
-        h('li', {}, 'Leave a trace: choose a region, a colour, a pattern and an intensity. No account needed — the first time, the site creates an anonymous guest session for you.'),
+        h('li', {}, 'Leave a trace: choose a region, a colour, a pattern and an intensity. Completely anonymous — no account, no sign-in, nothing to fill in.'),
         h('li', {}, 'The server validates the trace, applies rate limits, records it, updates the region and tells every connected visitor. Only then does the site show that it was accepted.'),
         h('li', {}, 'Optionally create an account to keep your trace history across devices, save discoveries and set a pseudonym. Accounts get slightly higher limits. Paying never gives anyone more control over the shared world.')),
 
@@ -40,7 +40,7 @@ export function render() {
       h('p', {}, 'Your trace is shown publicly with a pseudonym (generated, or one you choose), its colour, pattern, region and time. Account email addresses, account ids and IP addresses are never shown in the world. Details are in the ', link('/privacy', {}, 'privacy policy'), '.'),
 
       h('h2', {}, 'Limits and fairness'),
-      h('p', {}, `To keep the world fair, guests can leave one trace every ${LIMITS.guest.cooldownSeconds} seconds (up to ${LIMITS.guest.perHour} per hour and ${LIMITS.guest.perDay} per day) and repeated traces in one region add less energy. These controls make spam expensive; they cannot stop every bot, and the operators can pause contributions if needed.`),
+      h('p', {}, `To keep the world fair, anonymous visitors can leave one trace every ${LIMITS.anonymous.cooldownSeconds} seconds (up to ${LIMITS.anonymous.perHour} per hour and ${LIMITS.anonymous.perDay} per day, per internet connection) and repeated traces in one region add less energy. These controls make spam expensive; they cannot stop every bot, and the operators can pause contributions if needed.`),
 
       h('h2', {}, 'Support'),
       h('p', {}, 'The organism is free. If you would like to help cover hosting, see ', link('/support', {}, 'Support'), '.')));

@@ -33,7 +33,7 @@ export function render() {
 
   const dangerOut = h('div', { 'aria-live': 'polite' });
   const user = authState().user;
-  const del = h('button', { type: 'button', class: 'btn btn-danger btn-sm', disabled: !user || config.demo }, icon('trash'), h('span', {}, isPermanentUser(user) ? 'Delete my account' : 'Forget my guest identity'));
+  const del = h('button', { type: 'button', class: 'btn btn-danger btn-sm', disabled: !user || config.demo }, icon('trash'), h('span', {}, isPermanentUser(user) ? 'Delete my account' : 'Delete my session data'));
   del.addEventListener('click', async () => {
     const ok = confirm('This permanently deletes your account data. Your traces stay in the world but are detached from you and renamed “Former visitor”. Continue?');
     if (!ok) return;

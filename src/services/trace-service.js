@@ -13,6 +13,7 @@ import { track } from './analytics-service.js';
 import { localGet, localSet } from '../utils/preferences.js';
 
 const LAST_TRACE_KEY = 'io:last-trace:v1';
+const HISTORY_KEY = 'io:my-traces:v1';
 
 export function createDraft(partial = {}) {
   return {
@@ -50,12 +51,21 @@ export async function submitTrace(draft) {
         },
       }]);
     }
-    localSet(LAST_TRACE_KEY, {
+    const entry = {
       at: result.created_at ?? new Date().toISOString(), alias: result.alias, region: result.region,
       color: draft.color, pattern: draft.pattern, intensity: draft.intensity, persistence: draft.persistence,
-    });
+      gain: result.energy_gain,
+    };
+    localSet(LAST_TRACE_KEY, entry);
+    // Anonymous traces are not linked to any account, so this browser keeps
+    // its own list (never sent anywhere).
+    if (!result.duplicate) localSet(HISTORY_KEY, [entry, ...(localGet(HISTORY_KEY) ?? [])].slice(0, 50));
   }
   return result ?? { ok: false, code: 'server' };
+}
+
+export function localTraceHistory() {
+  return localGet(HISTORY_KEY) ?? [];
 }
 
 export function lastTrace() {

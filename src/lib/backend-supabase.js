@@ -117,8 +117,8 @@ export function createSupabaseBackend() {
     async submitTrace(draft) {
       const v = validateTrace(draft);
       if (!v.ok) return { ok: false, code: 'invalid_parameters', field: v.field };
-      const session = await backend.ensureSession();
-      if (!session.ok) return session;
+      // No sign-in needed: without a session the server identifies the
+      // visitor by a keyed hash of their connection (see migration 6).
       const result = await rpcResult('submit_trace', {
         p_region_slug: v.value.regionSlug,
         p_trace_type: v.value.pattern,
@@ -175,14 +175,12 @@ export function createSupabaseBackend() {
       return () => data.subscription.unsubscribe();
     },
 
-    /** Guests get a Supabase anonymous session the first time they contribute. */
+    /** Personal features (saving discoveries) need an account; traces never do. */
     async ensureSession() {
       try {
         const { data } = await sb.auth.getSession();
         if (data.session) return { ok: true, user: data.session.user };
-        const { data: signed, error } = await sb.auth.signInAnonymously();
-        if (error) return { ok: false, code: codeFromError(error) === 'server' ? 'guest_disabled' : codeFromError(error) };
-        return { ok: true, user: signed.user };
+        return { ok: false, code: 'account_required' };
       } catch (e) {
         return { ok: false, code: codeFromError(e) };
       }
@@ -297,8 +295,6 @@ export function createSupabaseBackend() {
 
     // ----------------------------------------------------------- moderation
     async submitReport({ targetType, targetId, reason, details }) {
-      const session = await backend.ensureSession();
-      if (!session.ok) return session;
       const r = await rpcResult('submit_report', { p_target_type: targetType, p_target_id: String(targetId), p_reason: reason, p_details: details ?? null });
       if (!r.ok && r.code === 'hourly_limit') r.code = 'hourly_limit_report';
       return r;

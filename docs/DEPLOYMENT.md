@@ -18,15 +18,14 @@ every setting that must be right in production, and how to verify it.
    Migration `20261020000005_initial_world.sql` creates the six starting regions,
    so a fresh production database is never empty. `seed.sql` is for local resets only.
 3. **Authentication → Sign In / Providers**
-   * Enable **Anonymous sign-ins** (required for guest traces).
+   * Anonymous sign-ins are **not** needed — visitors leave traces with no session.
    * Email: keep **Confirm email** on. Minimum password length 10.
    * Optional OAuth providers; list the same ones in `VITE_AUTH_OAUTH_PROVIDERS`.
 4. **Authentication → URL Configuration**
    * Site URL: `https://your-domain`
    * Redirect URLs: `https://your-domain/profile`, `https://your-domain/reset-password`
      (and your Vercel preview domain pattern if you use previews).
-5. **Authentication → Rate limits**: keep anonymous sign-ins at about 30/hour per IP.
-   Optionally enable CAPTCHA protection.
+5. **Authentication → Rate limits**: defaults are fine (they only apply to optional accounts).
 6. **API settings**: set *Max rows* to 100.
 7. **Realtime**: the migration adds `world_events` and `community_events` to the
    `supabase_realtime` publication. Check under Database → Publications.

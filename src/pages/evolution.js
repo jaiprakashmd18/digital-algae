@@ -158,7 +158,7 @@ export function render({ query }) {
         h('div', { class: 'card' }, h('h3', {}, 'Convergence'),
           h('p', { class: 'fine muted' }, 'Every UTC day one region is chosen by a hash of the date. If enough different visitors leave a trace there that day — 60% of the recent daily average, between 3 and 25 — it converges.')),
         h('div', { class: 'card' }, h('h3', {}, 'Limits'),
-          h('p', { class: 'fine muted' }, `Guests: one trace per ${LIMITS.guest.cooldownSeconds} s, ${LIMITS.guest.perHour}/hour, ${LIMITS.guest.perDay}/day. Accounts: ${LIMITS.account.cooldownSeconds} s, ${LIMITS.account.perHour}/hour, ${LIMITS.account.perDay}/day.`)))),
+          h('p', { class: 'fine muted' }, `Anonymous visitors (per connection): one trace per ${LIMITS.anonymous.cooldownSeconds} s, ${LIMITS.anonymous.perHour}/hour, ${LIMITS.anonymous.perDay}/day. Accounts: ${LIMITS.account.cooldownSeconds} s, ${LIMITS.account.perHour}/hour, ${LIMITS.account.perDay}/day.`)))),
     h('section', { class: 'section' },
       h('h2', {}, 'Timeline'),
       h('div', { class: 'toolbar' }, h('div', { class: 'field' }, h('label', { for: 'tl-filter' }, 'Show'), filterSelect)),
