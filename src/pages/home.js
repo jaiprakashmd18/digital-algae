@@ -81,7 +81,7 @@ export function render({ query }) {
         },
       }, introDismissed ? 'Show introduction' : 'Hide introduction')));
 
-  const stats = createStatistics({ compact: matchMedia('(max-width: 720px)').matches });
+  const stats = createStatistics({ compact: matchMedia('(max-width: 860px), (max-height: 560px)').matches });
   cleanups.push(() => stats.destroy());
 
   // ---- Community event (today's Convergence).
@@ -107,7 +107,7 @@ export function render({ query }) {
       h('div', { class: 'home-left' }, intro, observe, community),
       h('div', { class: 'home-right' }, stats.el, regionPanel.el),
       h('div', { class: 'home-bottom' }, ticker, h('div', { class: 'home-actions' }, fab,
-        link('/discoveries', { class: 'btn btn-ghost btn-sm' }, icon('compass'), h('span', {}, 'Discoveries'))))),
+        link('/discoveries', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Discoveries' }, icon('compass'), h('span', { class: 'btn-label' }, 'Discoveries'))))),
     textWorld);
 
   function renderCommunity(s) {

@@ -416,3 +416,79 @@ body[data-route='home'] .site-footer {
     padding: var(--s-6) var(--s-4) var(--s-7);
   }
 }
+
+/* ---------------------------------------------------------- touch targets */
+.site-footer nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+  width: 20px;
+  height: 20px;
+}
+
+@media (pointer: coarse) {
+  .site-footer nav a {
+    min-height: 44px;
+    padding: 0 var(--s-1);
+  }
+
+  .stats-toggle {
+    min-height: 44px;
+  }
+
+  .region-label {
+    padding: 7px 12px 7px 9px;
+    font-size: 0.78rem;
+  }
+}
+
+/* ----------------------------------------------------------- demo banner */
+.demo-banner .banner-short {
+  display: none;
+}
+
+@media (max-width: 600px), (max-height: 500px) {
+  .demo-banner .banner-long {
+    display: none;
+  }
+
+  .demo-banner .banner-short {
+    display: inline;
+  }
+}
+
+/* -------------------------------------- short screens (phones sideways) */
+@media (max-height: 500px) {
+  :root {
+    --header-h: 48px;
+  }
+
+  .demo-banner {
+    padding: 3px var(--s-4);
+  }
+}
+
+/* ------------------------------------------------------- large monitors */
+@media (min-width: 1800px) {
+  html {
+    font-size: 106.25%;
+  }
+
+  :root {
+    --page-w: 1200px;
+  }
+}
+
+@media (min-width: 2400px) {
+  html {
+    font-size: 118.75%;
+  }
+
+  :root {
+    --page-w: 1320px;
+  }
+}

@@ -82,8 +82,12 @@ npx supabase link --project-ref <your-project-ref>
 npx supabase db push
 ```
 
-No CLI? Run `npm run db:bundle`, open the generated `supabase/setup-all-in-one.sql`,
-paste it into **Dashboard → SQL Editor** and click **Run** (once, on a fresh project).
+No CLI? Open `supabase/setup-all-in-one.sql`, paste it into **Dashboard → SQL
+Editor** and click **Run**. It is safe to run again at any time: parts that are
+already installed are skipped and only missing parts are added (it ends by
+showing "Internet Organism database is ready"). After changing migrations,
+regenerate it with `npm run db:bundle`. To start over completely, run
+`supabase/reset-internet-organism.sql` first (deletes all Internet Organism data).
 
 ### 8. Seed the initial world
 

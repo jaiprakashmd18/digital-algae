@@ -105,20 +105,33 @@
 .home-overlay {
   position: relative;
   z-index: 1;
-  min-height: calc(100dvh - var(--header-h));
+  /* Exactly one screen tall, so the bottom bar is always visible.
+     --chrome-top is the measured height of the banner + header (main.js). */
+  height: calc(100dvh - var(--chrome-top, var(--header-h)));
+  min-height: 420px;
   display: grid;
-  grid-template-columns: minmax(280px, 400px) 1fr minmax(280px, 360px);
-  grid-template-rows: 1fr auto;
+  grid-template-columns: minmax(300px, min(440px, 28vw)) minmax(0, 1fr) minmax(280px, min(400px, 25vw));
+  grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas:
     'left . right'
     'bottom bottom bottom';
   gap: var(--s-4);
-  padding: var(--s-4) var(--s-5) var(--s-5);
+  padding: var(--s-4) var(--s-5) calc(var(--s-4) + env(safe-area-inset-bottom));
   pointer-events: none;
 }
 
 .home-overlay > * > * {
   pointer-events: auto;
+}
+
+/* Side columns scroll internally instead of pushing the layout off-screen. */
+.home-left,
+.home-right {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(160, 200, 255, 0.2) transparent;
 }
 
 .home-left {
@@ -142,12 +155,14 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--s-4);
+  min-width: 0;
 }
 
 .home-actions {
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  flex: none;
 }
 
 .btn-trace {
@@ -157,7 +172,7 @@
 }
 
 .intro h1 {
-  font-size: var(--fs-hero);
+  font-size: clamp(1.9rem, 0.9rem + 2.4vw, 3.4rem);
   line-height: 1.04;
   letter-spacing: -0.035em;
 }
@@ -206,6 +221,8 @@
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  min-height: 32px;
+  width: 100%;
   background: none;
   border: 0;
   padding: 0;
@@ -287,8 +304,6 @@
   background: rgba(7, 11, 22, 0.9);
   display: grid;
   gap: var(--s-4);
-  max-height: calc(100dvh - var(--header-h) - 200px);
-  overflow: auto;
   border-color: hsl(var(--region-hue, 190) 80% 60% / 0.35);
 }
 
@@ -424,21 +439,51 @@
   gap: var(--s-2);
 }
 
-/* --------------------------------------------------------------- tablet */
-@media (max-width: 1100px) {
-  .home-overlay {
-    grid-template-columns: minmax(260px, 360px) 1fr minmax(260px, 320px);
+/* ------------------------------------------------- short desktop windows */
+@media (max-height: 820px) and (min-width: 861px) {
+  .intro h1 {
+    font-size: clamp(1.8rem, 0.8rem + 2vw, 2.6rem);
+  }
+
+  .intro-body p:nth-child(2) {
+    display: none;
+  }
+
+  .community .muted {
+    display: none;
   }
 }
 
-/* ----------------------------------------------------------------- mobile */
+/* --------------------------------------------------------------- tablet */
+@media (max-width: 1100px) and (min-width: 861px) {
+  .home-overlay {
+    grid-template-columns: minmax(270px, 330px) minmax(0, 1fr) minmax(250px, 300px);
+    padding-left: var(--s-4);
+    padding-right: var(--s-4);
+  }
+
+  .home-right {
+    margin-right: 50px;
+  }
+
+  .ticker {
+    max-width: 380px;
+  }
+}
+
+/* --------------------------------------------- phones and tablets (portrait) */
 @media (max-width: 860px) {
   .home-overlay {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
-    grid-template-areas: 'left' '.' 'bottom';
-    padding: var(--s-3) var(--s-4) calc(var(--s-4) + env(safe-area-inset-bottom));
-    min-height: calc(100dvh - var(--header-h));
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: 'left' '.';
+    padding: var(--s-3) var(--s-4) 0;
+  }
+
+  /* Leave room for the statistics pill and the action bar below. */
+  .home-left {
+    gap: var(--s-2);
+    max-height: calc(100dvh - var(--chrome-top, var(--header-h)) - 168px - env(safe-area-inset-bottom));
   }
 
   .home-right {
@@ -449,12 +494,17 @@
     bottom: calc(76px + env(safe-area-inset-bottom));
     margin: 0;
     pointer-events: none;
-    max-height: 60dvh;
+    max-height: min(62dvh, calc(100dvh - var(--chrome-top, var(--header-h)) - 96px));
   }
 
   .home-right .stats {
     justify-self: start;
+    max-width: 100%;
     background: rgba(7, 11, 22, 0.92);
+  }
+
+  .home-right .stats:not(.collapsed) {
+    justify-self: stretch;
   }
 
   .home-right:has(.region-panel:not([hidden])) .stats {
@@ -462,13 +512,9 @@
   }
 
   .region-panel {
-    max-height: 58dvh;
+    max-height: none;
     box-shadow: var(--shadow);
-    background: rgba(7, 11, 22, 0.94);
-  }
-
-  .home-left {
-    gap: var(--s-2);
+    background: rgba(7, 11, 22, 0.95);
   }
 
   .intro {
@@ -477,27 +523,14 @@
   }
 
   .intro h1 {
-    font-size: 1.7rem;
+    font-size: clamp(1.45rem, 1rem + 2.4vw, 2.2rem);
   }
 
   .intro-body {
     font-size: var(--fs-sm);
   }
 
-  .intro .btn-primary {
-    display: none;
-  }
-
-  .home-bottom {
-    position: fixed;
-    z-index: 21;
-    left: var(--s-3);
-    right: var(--s-3);
-    bottom: calc(var(--s-3) + env(safe-area-inset-bottom));
-    flex-direction: column;
-    align-items: stretch;
-  }
-
+  .intro .btn-primary,
   .intro-body p:not(:first-child),
   .community .muted {
     display: none;
@@ -512,38 +545,191 @@
     font-size: var(--fs-sm);
   }
 
+  .home-bottom {
+    position: fixed;
+    z-index: 21;
+    left: var(--s-3);
+    right: var(--s-3);
+    bottom: calc(var(--s-3) + env(safe-area-inset-bottom));
+  }
+
   .ticker {
     display: none;
   }
 
   .home-actions {
+    flex: 1;
     justify-content: center;
+    min-width: 0;
   }
 
   .btn-trace {
     flex: 1;
-    max-width: 340px;
+    min-width: 0;
+    max-width: 360px;
   }
 
   .view-controls {
     right: var(--s-3);
     bottom: auto;
-    top: 46%;
+    top: 62%;
+    transform: translateY(-50%);
   }
 
   .view-controls .icon-btn {
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
   }
 
   .world-text {
-    margin: 0 var(--s-3) var(--s-4);
+    margin: 0 var(--s-3) calc(96px + env(safe-area-inset-bottom));
     padding: var(--s-3) var(--s-4);
   }
 }
 
-@media (max-width: 860px) and (max-height: 620px) {
-  .intro-body {
+/* Tablets in portrait have room for the full introduction. */
+@media (min-width: 600px) and (max-width: 860px) and (min-height: 900px) {
+  .intro-body p:nth-child(2) {
+    display: block;
+  }
+
+  .home-right {
+    left: auto;
+    width: min(420px, calc(100vw - 24px));
+  }
+
+  .home-right .stats {
+    justify-self: end;
+  }
+}
+
+/* Narrow touch screens: pinch and drag replace the zoom buttons, which
+   would otherwise cover the panels. Regions stay selectable by name. */
+@media (max-width: 480px) and (pointer: coarse) {
+  .view-controls {
     display: none;
+  }
+}
+
+/* Very small phones. */
+@media (max-width: 400px) {
+  .home-actions .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .home-actions .btn-sm {
+    width: 52px;
+    min-height: 52px;
+    padding: 0;
+    border-radius: 50%;
+  }
+
+  .btn-trace {
+    padding: 0 var(--s-4);
+  }
+
+  .intro {
+    padding: var(--s-3) var(--s-4);
+  }
+
+  .intro-toggle {
+    font-size: var(--fs-xs);
+  }
+}
+
+/* -------------------------------------------- phones held sideways (short) */
+@media (max-height: 500px) and (min-width: 561px) {
+  .home-overlay {
+    grid-template-columns: minmax(250px, 330px) minmax(0, 1fr) minmax(220px, 300px);
+    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'left . right'
+      'bottom bottom bottom';
+    gap: var(--s-2);
+    padding: var(--s-2) calc(var(--s-3) + env(safe-area-inset-right)) calc(var(--s-2) + env(safe-area-inset-bottom)) calc(var(--s-3) + env(safe-area-inset-left));
+    min-height: 0;
+  }
+
+  .home-left {
+    max-height: none;
+  }
+
+  .home-right {
+    position: static;
+    margin-right: 48px;
+    max-height: none;
+  }
+
+  .home-right .stats {
+    justify-self: stretch;
+  }
+
+  .home-bottom {
+    position: static;
+  }
+
+  .intro {
+    padding: var(--s-3);
+    gap: var(--s-2);
+  }
+
+  .intro h1 {
+    font-size: 1.3rem;
+  }
+
+  .intro-body,
+  .intro .btn-primary,
+  .community .muted,
+  .community .progress {
+    display: none;
+  }
+
+  .btn-trace {
+    min-height: 44px;
+    flex: none;
+  }
+
+  .home-actions {
+    flex: none;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  .view-controls {
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .view-controls .icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .region-panel {
+    max-height: none;
+  }
+
+  .world-text {
+    margin-bottom: var(--s-3);
+  }
+}
+
+/* -------------------------------------------------------- large monitors */
+@media (min-width: 1800px) {
+  .home-overlay {
+    padding: var(--s-5) var(--s-6) var(--s-5);
+  }
+
+  .home-right {
+    margin-right: 64px;
+  }
+
+  .view-controls {
+    right: var(--s-6);
   }
 }
