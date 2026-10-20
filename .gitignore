@@ -11,5 +11,4 @@ supabase/.branches/
 supabase/.temp/
 .DS_Store
 *.log
-supabase/setup-all-in-one.sql
 !.env.production
